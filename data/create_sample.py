@@ -78,7 +78,7 @@ def get_noise_types(*args) -> list:
 	res = ["add_" + k for k in noise.keys()]
 	return res
 
-def load_audio(source: str, sph2pipe=None, matlab_engine=None):
+def load_audio(source: str, matlab_engine=None):
 	if matlab_engine is not None:
 		audio = AudioWrapper(*matlab_engine.audioread(source, nargout=2))
 		if audio.samples.size[1] != 1:
@@ -90,12 +90,9 @@ def load_audio(source: str, sph2pipe=None, matlab_engine=None):
 		try:
 			return Audio(source)
 		except CouldntDecodeError as e:
-			if sph2pipe and "Decoding failed" in e.args[0] and "invalid start code NIST in RIFF header" in e.args[0]:
-				# Convert sphere file to wav
-				sph2pipe(source)
-				return Audio(source)
-			else:
-				raise
+			if "Decoding failed" in e.args[0] and "invalid start code NIST in RIFF header" in e.args[0]:
+				print(f"It seems you are trying to open an unprocessed TIMIT audio file: {source}\nHave you prepared the dataset with './create_dataset.py prepare'?")
+			raise
 
 def pad(audio, t_start: float=0, t_end: float=0, matlab_engine=None):
 	"""Pad the audio with a number of seconds of silence at the start and end"""

@@ -1,4 +1,5 @@
 # Project-specific
+.vscode/
 kaldi
 matlab
 data/audio-degradation-toolbox/

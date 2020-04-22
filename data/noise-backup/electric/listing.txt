@@ -1,0 +1,12 @@
+001.wav https://freesound.org/people/adamamazing/sounds/274477/
+002.wav https://freesound.org/people/MrAuralization/sounds/187931/ *
+003.wav https://freesound.org/people/secretmojo/sounds/223855/
+004.wav https://freesound.org/people/MrAuralization/sounds/184569/ *
+005.flac https://freesound.org/people/copyc4t/sounds/235654/ *
+006.wav https://freesound.org/people/joedeshon/sounds/320871/
+007.wav https://freesound.org/people/PureAudioNinja/sounds/341609/
+008.wav https://freesound.org/people/PureAudioNinja/sounds/341612/
+009.wav https://freesound.org/people/PureAudioNinja/sounds/341616/
+010.wav https://freesound.org/people/PureAudioNinja/sounds/341617/
+011.wav https://freesound.org/people/PureAudioNinja/sounds/402538/ *
+

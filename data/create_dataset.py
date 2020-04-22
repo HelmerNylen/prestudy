@@ -145,7 +145,7 @@ def create(args):
 			# Save result to output folder
 			filename = _get_available_filename(
 				output_t,
-				args.classes[noise_t[i]] or "none",
+				(args.classes[noise_t[i]] or "none") + "_",
 				"wav",
 				1,
 				math.ceil(math.log10(len(speech_t) / n_classes))
@@ -214,8 +214,8 @@ if __name__ == "__main__":
 		prog="create_dataset.py",
 		description="Introduce problems into speech recordings"
 	)
-	subparsers = parser.add_subparsers()
 	parser.set_defaults(func=lambda a: parser.print_usage())
+	subparsers = parser.add_subparsers()
 
 	parser.add_argument("--profile", help="Profile the dataset creator", action="store_true")
 
@@ -248,11 +248,12 @@ if __name__ == "__main__":
 	subparser.add_argument("--no-cache", help="Disable caching noise files. Increases runtime but decreases memory usage.", action="store_true")
 
 	subparser = subparsers.add_parser("prepare", help="Prepare the audio files in the dataset (convert from nist to wav, stereo to mono etc.)")
+	subparser.set_defaults(func=prepare)
+	
 	subparser.add_argument("-p", "--prompt", help="List commands and ask for confirmation before performing preparation.", action="store_true")
 	subparser.add_argument("--no-skip", help="Process a file even if a processed .wav file with the same name already exists.", action="store_true")
 	subparser.add_argument("--keep-stereo", help="Do not convert stereo files to mono (kaldi requires mono for feature extraction)", action="store_true")
 	subparser.add_argument("--no-downsample", help="Do not downsample files to 16 kHz (kaldi and the WebRTC VAD require 16kHz audio)", action="store_true")
-	subparser.set_defaults(func=prepare)
 
 	subparser = subparsers.add_parser("list", help="List available files and degradations")
 	subparser.set_defaults(func=list_files)

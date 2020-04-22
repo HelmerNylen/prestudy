@@ -5,46 +5,45 @@ import sys
 import subprocess
 import kaldi_io
 import numpy as np
-from tempfile import NamedTemporaryFile
-from shutil import copy2
 
-def extract_mfcc(folder, overwrite=True):
-	path = os.path.join(folder, "mfcc.ark")
-	# Create folder/mfcc.ark, containing features of all wav files
-	if overwrite or not os.path.exists(path):
-		print(f"Extracting features in {folder} ...", end="", flush=True)
-		result = subprocess.run([
-			'compute-mfcc-feats',
-			'scp:-',
-			'ark:' + path],
-			input="\n".join(fn + " " + os.path.join(folder, fn)
-				for fn in next(os.walk(folder))[2] if fn.lower().endswith(".wav")) + "\n",
-			encoding=sys.getdefaultencoding(),
-			stderr=subprocess.PIPE
-		)
-		print(" Done")
-		if result.returncode:
-			print(result.stderr)
-			result.check_returncode()
-		else:
-			for line in result.stderr.splitlines(False):
-				if not line.startswith("LOG") and line != " ".join(result.args + []):
-					print(line)
+# Get the files in a folder sorted by the type of noise
+def type_sorted_files(folder):
+	files = [fn for fn in next(os.walk(folder))[2] if fn.lower().endswith(".wav")]
+	noise_types = set(os.path.splitext(f)[0].rstrip("0123456789").rstrip("_") for f in files)
+	res = dict((t, [f for f in files if f.startswith(t)]) for t in noise_types)
+	if sum(len(res[t]) for t in res) != len(files):
+		raise LookupError(f"{sum(len(res[t]) for t in res)} sorted files but {len(files)} unsorted files.\nThe filenames are probably invalid (should be e.g. 'add_hum_012.wav').")
+	return res
+
+# Get the MFCCs of each noise type in a folder
+def extract_mfcc(folder, overwrite):
+	res = dict()
+	for noise_type, filenames in type_sorted_files(folder).items():
+		path = os.path.join(folder, noise_type + "_mfcc.ark")
+		if overwrite or not os.path.exists(path):
+			# Create folder/mfcc.ark, containing features of all wav files
+			print(f"Extracting {noise_type} features in {folder} ...", end="", flush=True)
+			result = subprocess.run([
+				'compute-mfcc-feats',
+				'scp:-',
+				'ark:' + path],
+				input="\n".join(fn + " " + os.path.join(folder, fn)
+					for fn in filenames) + "\n",
+				encoding=sys.getdefaultencoding(),
+				stderr=subprocess.PIPE
+			)
+			print(" Done")
+			if result.returncode:
+				print(result.stderr)
+				result.check_returncode()
+			else:
+				for line in result.stderr.splitlines(False):
+					if not line.startswith("LOG") and line.strip() != " ".join(result.args).strip():
+						print(line)
+			print(f"Saved to {path}")
+		res[noise_type] = path
 	
-	return kaldi_io.read_mat_ark(path)
-
-
-def process(audio, activity):
-	"""with NamedTemporaryFile() as tmp:
-		subprocess.run([
-			os.path.join(kaldi_folder, "tools", "sph2pipe_v2.5", "sph2pipe"),
-			"-f", "wav",
-			input_file,
-			tmp.name], check=True)
-		copy2(tmp.name, input_file)
-	
-	"""
-	return (audio, activity)
+	return dict((t, kaldi_io.read_mat_ark(p)) for t, p in res.items())
 
 def load_all_train(train_folder, vad_aggressiveness, frame_length):
 	if not os.path.exists(train_folder):
@@ -77,9 +76,8 @@ def load_all_train(train_folder, vad_aggressiveness, frame_length):
 			frame = data[ptr*n_bytes_per_frame : (ptr+1)*n_bytes_per_frame]
 			activity[ptr] = vad.is_speech(frame, audio.frame_rate)
 
-		res[i] = process(audio, activity)
+		res[i] = (audio, activity)
 	return res
-		
 
 def load_all_test():
 	pass

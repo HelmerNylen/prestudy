@@ -62,7 +62,7 @@ def prep_folder(folder, recursive=False, prompt=False, skip_if_fixed=True, to_mo
 			info = get_info(path + ext)
 			command = _build_command(info, to_mono, downsample)
 
-			if ext.lower() != ".wav":
+			if ext != ".wav":
 				if skip_if_fixed and os.path.exists(path + ".wav") \
 						and len(_build_command(get_info(path + ".wav"), to_mono, downsample)) == 0:
 					# Already has a processed .wav version

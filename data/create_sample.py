@@ -43,7 +43,8 @@ class DegradationWrapper:
 def _noise_files(data_folder, rel_noise_folder, keep=[".wav"]):
 	noise_folder = os.path.join(data_folder, rel_noise_folder)
 	walk = os.walk(noise_folder, followlinks=True)
-	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1].lower() in keep])
+	# Skip .WAV files as these are unprocessed timit sphere files (i.e. don't use os.path.splitext(fn)[-1].lower())
+	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1] in keep])
 			for dp, dn, filenames in walk)
 	walk = ((os.path.relpath(dirpath, noise_folder), (dirpath, filenames))
 			for dirpath, dirnames, filenames in walk
@@ -53,7 +54,8 @@ def _noise_files(data_folder, rel_noise_folder, keep=[".wav"]):
 def _speech_files(data_folder, rel_speech_folder, keep=[".wav"]):
 	speech_folder = os.path.join(data_folder, rel_speech_folder)
 	walk = os.walk(speech_folder, followlinks=True)
-	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1].lower() in keep])
+	# Skip .WAV files as these are unprocessed timit sphere files (i.e. don't use os.path.splitext(fn)[-1].lower())
+	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1] in keep])
 			for dp, dn, filenames in walk)
 	walk = ((dirpath, filenames)
 			for dirpath, dirnames, filenames in walk

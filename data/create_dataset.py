@@ -81,7 +81,7 @@ def create(args):
 	if args.train < 0 or args.test < 0 or args.train + args.test > n_speechfiles:
 		print(f"Invalid partition of files: {args.train} train, {args.test} test, {args.train + args.test} total")
 		return
-	print(f"{args.train} training files and {args.test} testing files")
+	print(f"Speech: {args.train} training files and {args.test} testing files")
 
 	# Make sure output directories exist and optionally are clean
 	if args.output_train is None:
@@ -97,13 +97,26 @@ def create(args):
 	speech_test = speech[args.train:args.train + args.test]
 	del speech
 
+	# Partition noise set
+	noise_train = dict()
+	noise_test = dict()
+	print("Noise:")
+	for noise_type, tup in noise.items():
+		folder, files = tup
+		random.shuffle(files)
+		split = round(len(files) * args.train / (args.train + args.test))
+		noise_train[noise_type] = (folder, files[:split])
+		noise_test[noise_type] = (folder, files[split:])
+		print(f"\t{noise_type}: {split} training files and {len(files) - split} testing files")
+	del noise
+
 	# Assign noise types to speech files
-	noise_train = list(range(n_classes)) * (len(speech_train) // n_classes)
-	noise_train = noise_train + ([n_classes - 1] * (len(speech_train) - len(noise_train)))
-	random.shuffle(noise_train)
-	noise_test = list(range(n_classes)) * (len(speech_test) // n_classes)
-	noise_test = noise_test + ([n_classes - 1] * (len(speech_test) - len(noise_test)))
-	random.shuffle(noise_test)
+	labels_train = list(range(n_classes)) * (len(speech_train) // n_classes)
+	labels_train = labels_train + ([n_classes - 1] * (len(speech_train) - len(labels_train)))
+	random.shuffle(labels_train)
+	labels_test = list(range(n_classes)) * (len(speech_test) // n_classes)
+	labels_test = labels_test + ([n_classes - 1] * (len(speech_test) - len(labels_test)))
+	random.shuffle(labels_test)
 
 	# Optionally, start matlab
 	matlab_engine = None
@@ -120,13 +133,13 @@ def create(args):
 		print(" Done")
 
 	# Create datasets
-	noise_cache = None if args.no_cache else dict()
-
-	for t, speech_t, noise_t, output_t in [
-		["train", speech_train, noise_train, args.output_train],
-		["test", speech_test, noise_test, args.output_test]
+	for t, speech_t, labels_t, noise_t, output_t in [
+		["train", speech_train, labels_train, noise_train, args.output_train],
+		["test", speech_test, labels_test, noise_test, args.output_test]
 	]:
 		print(f"Creating {t}ing data ", end="", flush=True)
+
+		noise_cache = None if args.no_cache else dict()
 		for i in range(len(speech_t)):
 			# Load speech file
 			audio = load_audio(speech_t[i], matlab_engine)
@@ -136,8 +149,8 @@ def create(args):
 			# Apply noise to speech
 			audio = apply_noise(
 				audio,
-				args.classes[noise_t[i]],
-				noise,
+				args.classes[labels_t[i]],
+				noise_t,
 				args,
 				noise_cache,
 				matlab_engine
@@ -145,7 +158,7 @@ def create(args):
 			# Save result to output folder
 			filename = _get_available_filename(
 				output_t,
-				(args.classes[noise_t[i]] or "none") + "_",
+				(args.classes[labels_t[i]] or "none") + "_",
 				"wav",
 				1,
 				math.ceil(math.log10(len(speech_t) / n_classes))

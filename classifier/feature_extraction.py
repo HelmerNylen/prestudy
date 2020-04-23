@@ -6,22 +6,25 @@ import subprocess
 import kaldi_io
 import numpy as np
 
+def _concat_samples(train_data):
+	return np.concatenate(train_data), [arr.shape[0] for arr in train_data]
+
 # Get the files in a folder sorted by the type of noise
 def type_sorted_files(folder):
 	files = [fn for fn in next(os.walk(folder))[2] if fn.lower().endswith(".wav")]
 	noise_types = set(os.path.splitext(f)[0].rstrip("0123456789").rstrip("_") for f in files)
-	res = dict((t, [f for f in files if f.startswith(t)]) for t in noise_types)
+	res = dict((t, [f for f in files if f.startswith(t)]) for t in sorted(noise_types))
 	if sum(len(res[t]) for t in res) != len(files):
 		raise LookupError(f"{sum(len(res[t]) for t in res)} sorted files but {len(files)} unsorted files.\nThe filenames are probably invalid (should be e.g. 'add_hum_012.wav').")
 	return res
 
 # Get the MFCCs of each noise type in a folder
-def extract_mfcc(folder, overwrite):
-	res = dict()
+def extract_mfcc(folder, overwrite, concatenate=False):
+	arks = dict()
 	for noise_type, filenames in type_sorted_files(folder).items():
 		path = os.path.join(folder, noise_type + "_mfcc.ark")
 		if overwrite or not os.path.exists(path):
-			# Create folder/mfcc.ark, containing features of all wav files
+			# Create <folder>/<noise_type>_mfcc.ark, containing features of all wav files
 			print(f"Extracting {noise_type} features in {folder} ...", end="", flush=True)
 			result = subprocess.run([
 				'compute-mfcc-feats',
@@ -41,9 +44,15 @@ def extract_mfcc(folder, overwrite):
 					if not line.startswith("LOG") and line.strip() != " ".join(result.args).strip():
 						print(line)
 			print(f"Saved to {path}")
-		res[noise_type] = path
+		arks[noise_type] = path
 	
-	return dict((t, kaldi_io.read_mat_ark(p)) for t, p in res.items())
+	res = dict()
+	# Read all arks
+	for noise_type, ark in arks.items():
+		res[noise_type] = [mat for _, mat in kaldi_io.read_mat_ark(ark)]
+		if concatenate:
+			res[noise_type] = _concat_samples(res[noise_type])
+	return res
 
 def load_all_train(train_folder, vad_aggressiveness, frame_length):
 	if not os.path.exists(train_folder):

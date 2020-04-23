@@ -2,6 +2,8 @@
 .vscode/
 kaldi
 matlab
+gm_hmm
+classifier/models/*
 data/audio-degradation-toolbox/
 data/matlab-audio-degradation-toolbox/
 data/timit/*

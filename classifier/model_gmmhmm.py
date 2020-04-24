@@ -1,5 +1,5 @@
 import numpy as np
-from classifier import Classifier
+from model import Model
 try:
     from gm_hmm.src import ref_hmm
 except ModuleNotFoundError:
@@ -9,7 +9,7 @@ except ModuleNotFoundError:
         print(p)
     raise
 
-class GMMHMM(Classifier):
+class GMMHMM(Model):
     def __init__(self, *args, **kwargs):
         self.__gmm_hmm = ref_hmm.GMM_HMM(*args, **kwargs)
         self.__gmm_hmm.monitor_ = ref_hmm.ConvgMonitor(

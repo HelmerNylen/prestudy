@@ -5,23 +5,88 @@ import numpy as np
 import sys
 import pickle
 from time import time
+from model import Model
+from confusion_table import ConfusionTable
 
-class Classifier():
-	def __init__(self, *args, **kwargs):
-		raise NotImplementedError()
+class Classifier:
+	def __init__(self, noise_types, model_type: Model, *args, **kwargs):
+		self.models = dict(
+			(noise_type, model_type(*args, **kwargs))
+			for noise_type in noise_types
+		)
+		self.model_type = model_type
+	
+	def train(self, labeled_features, verbose=True, save_models_to=None):
+		for noise_type, model in self.models.items():
+			if verbose:
+				print(f"Training {noise_type} {model.__class__.__name__} model")
+			model.train(labeled_features[noise_type], isinstance(labeled_features[noise_type], tuple))
+			if save_models_to is not None:
+				if not os.path.exists(save_models_to):
+					if verbose:
+						print(f"Creating folder {save_models_to}")
+					os.mkdir(save_models_to)
+				model.save_to_file(os.path.join(save_models_to, self.filename(noise_type)))
+	
+	def label(self, features, return_scores=False):
+		scores = []
+		noise_types = []
+		for noise_type, model in self.models.items():
+			scores.append(model.test(features, isinstance(features, tuple)))
+			noise_types.append(noise_type)
+		scores = np.column_stack(scores)
+		predicted_class = np.argmax(scores, axis=1)
+		noise_types = np.array(noise_types)
+		
+		return (predicted_class, noise_types) + ((scores,) if return_scores else ())
+			
+	def test(self, labeled_features):
+		res = ConfusionTable(sorted(labeled_features.keys()), sorted(self.models.keys()))
 
+		for noise_type, features in labeled_features.items():
+			predicted_class, noise_types = self.label(features)
+			for confused_type in res.confused_labels:
+				idx, = np.argwhere(noise_types == confused_type)
+				res[noise_type, confused_type] = sum(predicted_class == idx) / len(predicted_class)
+				print(noise_type, "confused with", confused_type, sum(predicted_class == idx) / len(predicted_class))
+		
+		return res
+
+	
 	@staticmethod
-	def from_file(filename):
+	def from_file(*, filename=None, folder=None, model_type=None) -> 'Classifier':
+		if filename is None:
+			if model_type is None:
+				raise ValueError()
+			filename = model_type + ".classifier"
+		if folder is not None:
+			filename = os.path.join(folder, filename)
 		with open(filename, 'rb') as f:
-			return pickle.load(f)
-	def save_to_file(self, filename):
+			classifier = pickle.load(f)
+			if isinstance(classifier, Classifier):
+				return classifier
+			else:
+				raise ValueError(f"File {filename} does not contain a Classifier")
+
+	def save_to_file(self, *, folder=None, filename=None):
+		if folder is not None and not os.path.exists(folder):
+			print(f"Creating folder {folder}")
+			os.mkdir(folder)
+		filename = filename or self.filename()
+		if folder is not None:
+			filename = os.path.join(folder, filename)
 		with open(filename, 'wb') as f:
 			pickle.dump(self, f)
-
-	def train(self, train_data, is_concatenated=False):
-		raise NotImplementedError()
-	def test(self, test_data, is_concatenated=False):
-		raise NotImplementedError()
+	
+	def filename(self, noise_type=None):
+		if noise_type is None:
+			return self.model_type.__name__ + ".classifier"
+		else:
+			return self.model_type.__name__ + "_" + noise_type + ".model"
+	@staticmethod
+	def find_classifiers(folder):
+		files = next(os.walk(folder, followlinks=True))[2]
+		return [os.path.join(folder, f) for f in files if os.path.splitext(f)[1] == ".classifier"]
 
 def get_kaldi_root(assign=False):
 	if 'KALDI_ROOT' in os.environ:
@@ -38,9 +103,6 @@ def allow_gm_hmm_import(folder):
 	else:
 		raise FileNotFoundError("gm_hmm folder does not exist: " + folder)
 
-def classifier_file_name(noise_type, classifier_type):
-	return classifier_type.__name__ + "_" + noise_type + ".model"
-
 def train(args):
 	if args.kaldi is None:
 		get_kaldi_root(assign=True)
@@ -49,7 +111,7 @@ def train(args):
 	allow_gm_hmm_import(args.gm_hmm)
 	import kaldi_io
 	from feature_extraction import extract_mfcc
-	from classifier_gmmhmm import GMMHMM
+	from model_gmmhmm import GMMHMM
 
 	if args.data is None:
 		args.data = ""
@@ -57,25 +119,21 @@ def train(args):
 		args.train = os.path.join(args.data, "train")
 	if not os.path.exists(args.models):
 		print("Models folder does not exist: " + args.models)
-		return
+		sys.exit(1)
 
 	feats = extract_mfcc(args.train, args.recompute, concatenate=True)
 
-	classifier_sets = []
+	classifiers = []
 	n = 3
 	K = 2
 	niter = 5
-	classifier_sets.append(dict(
-		(noise_type, GMMHMM(
-			n_components=n, n_mix=K, covariance_type="diag",
-			tol=-np.inf, n_iter=niter, verbose=True
-		)) for noise_type in feats
+	classifiers.append(Classifier(feats.keys(), GMMHMM,
+		n_components=n, n_mix=K, covariance_type="diag",
+		tol=-np.inf, n_iter=niter, verbose=True
 	))
-	for classifier_set in classifier_sets:
-		for noise_type, classifier in classifier_set.items():
-			print(f"Training {noise_type} {classifier.__class__.__name__} classifier")
-			classifier.train(feats[noise_type], True)
-			classifier.save_to_file(os.path.join(args.models, classifier_file_name(noise_type, classifier.__class__)))
+	for classifier in classifiers:
+		classifier.train(feats, save_models_to=args.models)
+		classifier.save_to_file(folder=args.models)
 	print("Done")
 
 def test(args):
@@ -86,7 +144,7 @@ def test(args):
 	allow_gm_hmm_import(args.gm_hmm)
 	import kaldi_io
 	from feature_extraction import extract_mfcc
-	from classifier_gmmhmm import GMMHMM
+	from model_gmmhmm import GMMHMM
 
 	if args.data is None:
 		args.data = ""
@@ -94,45 +152,26 @@ def test(args):
 		args.test = os.path.join(args.data, "test")
 	if not os.path.exists(args.models):
 		print("Models folder does not exist: " + args.models)
-		return
+		sys.exit(1)
 
 	feats = extract_mfcc(args.test, args.recompute, concatenate=True)
 	
-	print("Reading models ...", end="", flush=True)
-	classifier_sets = []
-	classifier_types = (GMMHMM,)
-	for classifier_type in classifier_types:
-		classifier_sets.append(dict(
-			(noise_type, classifier_type.from_file(
-				os.path.join(args.models, classifier_file_name(noise_type, classifier_type))
-			)) for noise_type in feats
-	))
+	print("Reading classifiers ...", end="", flush=True)
+	classifiers = [Classifier.from_file(filename=f) for f in Classifier.find_classifiers(args.models)]
 	print(" Done")
 
+	if len(classifiers) == 0:
+		print("Found no classifiers")
+		sys.exit(1)
+	print(f"Found classifiers: {','.join(c.model_type.__name__ for c in classifiers)}")
+
 	print("Calculating scores ...", end="", flush=True)
-	confusion_tables = []
-	for classifier_set in classifier_sets:
-		confusion_table = []
-		for noise_type in sorted(feats.keys()):
-			scores = []
-			for classifier_nt in sorted(classifier_set.keys()):
-				scores.append(classifier_set[classifier_nt].test(feats[noise_type], is_concatenated=True))
-			scores = np.column_stack(scores)
-			predicted_class = np.argmax(scores, axis=1)
-			confusion_table.append([noise_type] + [sum(predicted_class == nti) / len(predicted_class) for nti in range(len(feats))])
-		confusion_tables.append(confusion_table)
+	confusion_tables = [c.test(feats) for c in classifiers]
 	print("Done")
 	
-	for classifier_type, confusion_table in zip(classifier_types, confusion_tables):
-		widths = [max(map(lambda row: len(row[0]), confusion_table))] + [max(7, len(nt)) for nt in sorted(feats.keys())]
-
-		print("Confusion table for", classifier_type.__name__)
-		print("  ".join(["true".center(widths[0], '-'), "confused with".center(sum(widths[1:]) + 2*(len(widths) - 2), '-')]))
-		print("  ".join(s.rjust(widths[i]) for i, s in enumerate([""] + list(sorted(feats.keys())))))
-		for row in confusion_table:
-			print("  ".join(val.rjust(widths[0]) if type(val) is str else f"{val:>{widths[i]}.2%}" for i, val in enumerate(row)))
-		print()
-		print(f"Total accuracy: {sum(confusion_table[i][i+1] for i in range(len(feats))) / len(feats):.2%}")
+	for classifier, confusion_table in zip(classifiers, confusion_tables):
+		print("Confusion table for", classifier.model_type.__name__)
+		print(confusion_table)
 		print()
 	
 

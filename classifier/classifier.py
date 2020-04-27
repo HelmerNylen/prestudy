@@ -20,7 +20,7 @@ class Classifier:
 		for noise_type, model in self.models.items():
 			if verbose:
 				print(f"Training {noise_type} {model.__class__.__name__} model")
-			model.train(labeled_features[noise_type], isinstance(labeled_features[noise_type], tuple))
+			model.train(labeled_features[noise_type])
 			if save_models_to is not None:
 				if not os.path.exists(save_models_to):
 					if verbose:
@@ -32,7 +32,7 @@ class Classifier:
 		scores = []
 		noise_types = []
 		for noise_type, model in self.models.items():
-			scores.append(model.test(features, isinstance(features, tuple)))
+			scores.append(model.score(features))
 			noise_types.append(noise_type)
 		scores = np.column_stack(scores)
 		predicted_class = np.argmax(scores, axis=1)
@@ -47,8 +47,8 @@ class Classifier:
 			predicted_class, noise_types = self.label(features)
 			for confused_type in res.confused_labels:
 				idx, = np.argwhere(noise_types == confused_type)
-				res[noise_type, confused_type] = sum(predicted_class == idx) / len(predicted_class)
-				print(noise_type, "confused with", confused_type, sum(predicted_class == idx) / len(predicted_class))
+				res[noise_type, confused_type] = sum(predicted_class == idx)
+			res[noise_type, res.TOTAL] = len(predicted_class)
 		
 		return res
 
@@ -112,6 +112,8 @@ def train(args):
 	import kaldi_io
 	from feature_extraction import extract_mfcc
 	from model_gmmhmm import GMMHMM
+	from model_genhmm import GenHMM
+	from model_lstm import LSTM
 
 	if args.data is None:
 		args.data = ""
@@ -121,9 +123,10 @@ def train(args):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
 
-	feats = extract_mfcc(args.train, args.recompute, concatenate=True)
+	feats = extract_mfcc(args.train, args.recompute)
 
 	classifiers = []
+	"""
 	n = 3
 	K = 2
 	niter = 5
@@ -131,6 +134,18 @@ def train(args):
 		n_components=n, n_mix=K, covariance_type="diag",
 		tol=-np.inf, n_iter=niter, verbose=True
 	))
+	
+	# Verkar bara fungera när net_D är 12??????
+	classifiers.append(Classifier(feats.keys(), GenHMM,
+		n_states=3, n_prob_components=2, em_skip=4, device="cpu",
+		lr=0.004, net_H=24, net_D=12, net_nchain=4, p_drop=0,
+		mask_type="cross", startprob_type="first", transmat_type="triangular"
+	))
+	"""
+	classifiers.append(Classifier(feats.keys(), LSTM,
+		hidden_dim=32
+	))
+
 	for classifier in classifiers:
 		classifier.train(feats, save_models_to=args.models)
 		classifier.save_to_file(folder=args.models)
@@ -145,6 +160,7 @@ def test(args):
 	import kaldi_io
 	from feature_extraction import extract_mfcc
 	from model_gmmhmm import GMMHMM
+	from model_genhmm import GenHMM
 
 	if args.data is None:
 		args.data = ""
@@ -154,7 +170,7 @@ def test(args):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
 
-	feats = extract_mfcc(args.test, args.recompute, concatenate=True)
+	feats = extract_mfcc(args.test, args.recompute)
 	
 	print("Reading classifiers ...", end="", flush=True)
 	classifiers = [Classifier.from_file(filename=f) for f in Classifier.find_classifiers(args.models)]
@@ -163,7 +179,7 @@ def test(args):
 	if len(classifiers) == 0:
 		print("Found no classifiers")
 		sys.exit(1)
-	print(f"Found classifiers: {','.join(c.model_type.__name__ for c in classifiers)}")
+	print(f"Found classifiers: {', '.join(c.model_type.__name__ for c in classifiers)}")
 
 	print("Calculating scores ...", end="", flush=True)
 	confusion_tables = [c.test(feats) for c in classifiers]

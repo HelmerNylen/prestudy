@@ -6,8 +6,13 @@ import subprocess
 import kaldi_io
 import numpy as np
 
-def _concat_samples(train_data):
-	return np.concatenate(train_data), [arr.shape[0] for arr in train_data]
+def concat_samples(data):
+	return np.concatenate(data), [arr.shape[0] for arr in data]
+
+def split_samples(data, lengths=None):
+	if lengths == None:
+		data, lengths = data
+	return np.split(data, np.cumsum(lengths[:-1]))
 
 # Get the files in a folder sorted by the type of noise
 def type_sorted_files(folder):
@@ -51,7 +56,7 @@ def extract_mfcc(folder, overwrite, concatenate=False):
 	for noise_type, ark in arks.items():
 		res[noise_type] = [mat for _, mat in kaldi_io.read_mat_ark(ark)]
 		if concatenate:
-			res[noise_type] = _concat_samples(res[noise_type])
+			res[noise_type] = concat_samples(res[noise_type])
 	return res
 
 def load_all_train(train_folder, vad_aggressiveness, frame_length):

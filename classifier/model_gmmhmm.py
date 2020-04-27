@@ -19,14 +19,14 @@ class GMMHMM(Model):
 		)
 		self.__gmm_hmm.iepoch = 1
 
-	def train(self, train_data, is_concatenated=False):
-		if not is_concatenated:
-			raise ValueError("GMMHMM requires concatenated samples")
+	def train(self, train_data):
+		if not Model.is_concatenated(train_data):
+			train_data = Model.concatenated(train_data)
 		self.__gmm_hmm.fit(train_data[0], lengths=train_data[1])
 		self.__gmm_hmm.iepoch += 1
 	
-	def score(self, test_data, is_concatenated=False):
-		if is_concatenated:
+	def score(self, test_data):
+		if Model.is_concatenated(test_data):
 			res = np.zeros(len(test_data[1]))
 			ptr = 0
 			for i, l in enumerate(test_data[1]):

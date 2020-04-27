@@ -10,8 +10,19 @@ class Model():
 	def save_to_file(self, filename):
 		with open(filename, 'wb') as f:
 			pickle.dump(self, f)
+	@staticmethod
+	def concatenated(data):
+		from feature_extraction import concat_samples
+		return concat_samples(data)
+	@staticmethod
+	def split(data, lengths=None):
+		from feature_extraction import split_samples
+		return split_samples(data, lengths)
+	@staticmethod
+	def is_concatenated(data):
+		return isinstance(data, tuple)
 
-	def train(self, train_data, is_concatenated=False):
+	def train(self, train_data):
 		raise NotImplementedError()
-	def test(self, test_data, is_concatenated=False):
+	def score(self, test_data):
 		raise NotImplementedError()

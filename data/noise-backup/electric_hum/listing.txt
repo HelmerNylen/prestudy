@@ -9,4 +9,12 @@
 009.wav https://freesound.org/people/PureAudioNinja/sounds/341616/
 010.wav https://freesound.org/people/PureAudioNinja/sounds/341617/
 011.wav https://freesound.org/people/PureAudioNinja/sounds/402538/ *
+012.wav Sten Ternström
+013.wav Sten Ternström
+014.wav Sten Ternström
+015.wav Sten Ternström
+016.wav Sten Ternström
+017.wav Sten Ternström
+018.wav Sten Ternström
+019.wav Sten Ternström
 

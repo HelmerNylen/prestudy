@@ -10,38 +10,57 @@ from confusion_table import ConfusionTable
 
 class Classifier:
 	def __init__(self, noise_types, model_type: Model, *args, **kwargs):
-		self.models = dict(
-			(noise_type, model_type(*args, **kwargs))
-			for noise_type in noise_types
-		)
 		self.model_type = model_type
+
+		if self.model_type.MULTICLASS:
+			self.model = model_type(*args, noise_types=noise_types, **kwargs)
+		else:
+			self.models = dict(
+				(noise_type, model_type(*args, **kwargs))
+				for noise_type in noise_types
+			)
 	
 	def train(self, labeled_features, verbose=True, save_models_to=None):
-		for noise_type, model in self.models.items():
-			if verbose:
-				print(f"Training {noise_type} {model.__class__.__name__} model")
-			model.train(labeled_features[noise_type])
-			if save_models_to is not None:
-				if not os.path.exists(save_models_to):
-					if verbose:
-						print(f"Creating folder {save_models_to}")
-					os.mkdir(save_models_to)
-				model.save_to_file(os.path.join(save_models_to, self.filename(noise_type)))
+		if self.model_type.MULTICLASS:
+			self.model.train(labeled_features)
+		else:
+			for noise_type, model in self.models.items():
+				if verbose:
+					print(f"Training {noise_type} {model.__class__.__name__} model")
+
+				model.train(labeled_features[noise_type])
+				
+				if save_models_to is not None:
+					if not os.path.exists(save_models_to):
+						if verbose:
+							print(f"Creating folder {save_models_to}")
+						os.mkdir(save_models_to)
+					model.save_to_file(os.path.join(save_models_to, self.filename(noise_type)))
 	
 	def label(self, features, return_scores=False):
-		scores = []
-		noise_types = []
-		for noise_type, model in self.models.items():
-			scores.append(model.score(features))
-			noise_types.append(noise_type)
-		scores = np.column_stack(scores)
-		predicted_class = np.argmax(scores, axis=1)
-		noise_types = np.array(noise_types)
-		
+		if self.model_type.MULTICLASS:
+			scores = self.model.score(features)
+			predicted_class = np.argmax(scores, axis=1)
+			noise_types = np.array(self.model.get_noise_types())
+
+		else:
+			scores = []
+			noise_types = []
+			for noise_type, model in self.models.items():
+				scores.append(model.score(features))
+				noise_types.append(noise_type)
+			scores = np.column_stack(scores)
+			predicted_class = np.argmax(scores, axis=1)
+			noise_types = np.array(noise_types)
+			
 		return (predicted_class, noise_types) + ((scores,) if return_scores else ())
 			
-	def test(self, labeled_features):
-		res = ConfusionTable(sorted(labeled_features.keys()), sorted(self.models.keys()))
+	def test(self, labeled_features) -> ConfusionTable:
+		res = ConfusionTable(
+			sorted(labeled_features.keys()),
+			sorted(self.model.get_noise_types() if self.model_type.MULTICLASS else self.models.keys())
+		)
+		start = time()
 
 		for noise_type, features in labeled_features.items():
 			predicted_class, noise_types = self.label(features)
@@ -50,6 +69,8 @@ class Classifier:
 				res[noise_type, confused_type] = sum(predicted_class == idx)
 			res[noise_type, res.TOTAL] = len(predicted_class)
 		
+		res.time = time() - start
+			
 		return res
 
 	
@@ -114,6 +135,7 @@ def train(args):
 	from model_gmmhmm import GMMHMM
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
+	from model_svm import SVM
 
 	if args.data is None:
 		args.data = ""
@@ -143,8 +165,13 @@ def train(args):
 	))
 	"""
 	classifiers.append(Classifier(feats.keys(), LSTM,
-		hidden_dim=32
+		hidden_dim=20, num_layers=2
 	))
+	"""
+	classifiers.append(Classifier(feats.keys(), SVM,
+		frame_len=20, frame_overlap=5
+	))
+	"""
 
 	for classifier in classifiers:
 		classifier.train(feats, save_models_to=args.models)
@@ -161,6 +188,8 @@ def test(args):
 	from feature_extraction import extract_mfcc
 	from model_gmmhmm import GMMHMM
 	from model_genhmm import GenHMM
+	from model_lstm import LSTM
+	from model_svm import SVM
 
 	if args.data is None:
 		args.data = ""
@@ -180,9 +209,12 @@ def test(args):
 		print("Found no classifiers")
 		sys.exit(1)
 	print(f"Found classifiers: {', '.join(c.model_type.__name__ for c in classifiers)}")
-
-	print("Calculating scores ...", end="", flush=True)
-	confusion_tables = [c.test(feats) for c in classifiers]
+	
+	print("Calculating scores ...", flush=True)
+	confusion_tables = []
+	for classifier in classifiers:
+		print(classifier.model_type.__name__)
+		confusion_tables.append(classifier.test(feats))
 	print("Done")
 	
 	for classifier, confusion_table in zip(classifiers, confusion_tables):

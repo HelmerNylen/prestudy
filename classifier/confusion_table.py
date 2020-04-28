@@ -9,6 +9,7 @@ class ConfusionTable:
 		assert np.alltrue(self.confused_labels == np.unique(confused_labels))
 		self.data = np.zeros((len(true_labels), len(confused_labels)))
 		self.totals = np.zeros(len(true_labels))
+		self.time = None
 	
 	def __map_indices(self, true_labels, confused_labels):
 		if isinstance(true_labels, slice):
@@ -67,11 +68,23 @@ class ConfusionTable:
 	
 	def __str__(self):
 		res = []
-		widths = [max(map(len, self.true_labels))] + [max(7, len(c)) for c in self.confused_labels]
+		totals_col = not np.alltrue(self.totals == 0)
 
-		res.append("  ".join(["true".center(widths[0], '-'), "guessed".center(sum(widths[1:]) + 2*(len(widths) - 2), '-')]))
-		res.append("  ".join(s.rjust(widths[i]) for i, s in enumerate([""] + list(self.confused_labels))))
+		widths = [max(map(len, self.true_labels))] + [max(7, len(c)) for c in self.confused_labels]
+		if totals_col:
+			widths.append(max(len(f"{n:.0f}") for n in self.totals))
+
+		res.append("  ".join(["true".center(widths[0], '-'), "guessed".center(sum(widths[1:1+len(self.confused_labels)]) + 2*(len(self.confused_labels) - 1), '-')]))
+		res.append("  ".join(s.rjust(widths[i]) for i, s in enumerate([""] + list(self.confused_labels) + (["N"] if totals_col else []))))
 		for row, true_label in enumerate(self.true_labels):
-			res.append("  ".join([true_label.rjust(widths[0])] + [f"{val:>{widths[i+1]}.2f}" if self.totals[row] == 0 else f"{val/self.totals[row]:>{widths[i+1]}.2%}" for i, val in enumerate(self.data[row])]))
+			res.append("  ".join(
+				[true_label.rjust(widths[0])]
+				+ [f"{val:>{widths[i+1]}.2f}" if self.totals[row] == 0 else f"{val/self.totals[row]:>{widths[i+1]}.2%}"
+						for i, val in enumerate(self.data[row])]
+				+ ([f"{self.totals[row]:.0f}"] if totals_col else [])
+			))
+		
+		if self.time:
+			res.append(f"Classification time: {self.time:.2f} s" + (f" ({1000 * self.time / sum(self.totals):.2f} ms per sequence)" if totals_col else ""))
 		
 		return "\n".join(res)

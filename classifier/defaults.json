@@ -1,0 +1,67 @@
+{
+	"GenHMM": {
+		"parameters": {
+			"n_states": 3,
+			"n_prob_components": 2,
+			"em_skip": 4,
+			"device": "cpu",
+			"lr": 0.004,
+			"net_H": 24,
+			"net_D": 12,
+			"net_nchain": 4,
+			"p_drop": 0,
+			"mask_type": "cross",
+			"startprob_type": "first",
+			"transmat_type": "triangular"
+		},
+		"train": {
+			"batch_size": 96,
+			"n_iter": 4,
+			"force_cpu": false
+		}
+	},
+	"GMMHMM": {
+		"parameters": {
+			"n_components": 3,
+			"n_mix": 2,
+			"covariance_type": "diag"
+		},
+		"train": {
+			"n_iter": 5,
+			"verbose": true,
+			"tol": "-inf"
+		}
+	},
+	"LSTM": {
+		"parameters": {
+			"num_layers": 2,
+			"dropout": 0,
+			"hidden_dim": 20
+		},
+		"train": {
+			"learning_rate": 0.005,
+			"batch_size": 256,
+			"n_iter": 4,
+			"verbose": false
+		}
+	},
+	"SVM": {
+		"parameters": {
+			"C": 1.0,
+			"gamma": "scale",
+			"cache_size": 1000,
+			"frame_len": 20,
+			"frame_overlap": 5,
+			"kernel": "rbf"
+		},
+		"train": {
+			"tol": 1e-3,
+			"max_iter": -1,
+			"verbose": 2
+		}
+	},
+	"CNN": {
+		"parameters": {},
+		"train": {}
+	}
+}

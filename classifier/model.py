@@ -1,13 +1,13 @@
 import pickle
 class Model():
-	def __init__(self, *args, **kwargs):
+	def __init__(self, config: dict, noise_types: list=None):
 		raise NotImplementedError()
 
 	MULTICLASS = False
 	def get_noise_types(self):
 		raise NotImplementedError()
 	
-	def train(self, train_data):
+	def train(self, train_data, config: dict=None):
 		raise NotImplementedError()
 	def score(self, test_data):
 		raise NotImplementedError()

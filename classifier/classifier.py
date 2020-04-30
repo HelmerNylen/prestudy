@@ -4,58 +4,81 @@ import os
 import numpy as np
 import sys
 import pickle
+import json
+import re
 from time import time
+from contextlib import redirect_stdout
 from model import Model
 from confusion_table import ConfusionTable
 
 class Classifier:
-	def __init__(self, noise_types, model_type: Model, *args, **kwargs):
+	def __init__(self, noise_types: list, model_type: Model, config: dict, silent: bool):
 		self.model_type = model_type
+		self.config = config[model_type.__name__]
+
+		if silent:
+			for category in self.config:
+				if "verbose" in self.config[category]:
+					self.config[category]["verbose"] = False
 
 		if self.model_type.MULTICLASS:
-			self.model = model_type(*args, noise_types=noise_types, **kwargs)
+			self.model = model_type(noise_types=noise_types, config=self.config)
 		else:
 			self.models = dict(
-				(noise_type, model_type(*args, **kwargs))
+				(noise_type, model_type(config=self.config))
 				for noise_type in noise_types
 			)
 	
-	def train(self, labeled_features, verbose=True, save_models_to=None):
+	def train(self, labeled_features, models_folder=None, silent=False):
 		if self.model_type.MULTICLASS:
-			self.model.train(labeled_features)
+			with redirect_stdout(sys.stderr if silent else sys.stdout):
+				self.model.train(labeled_features, config=self.config)
 		else:
 			for noise_type, model in self.models.items():
-				if verbose:
+				if not silent:
 					print(f"Training {noise_type} {model.__class__.__name__} model")
 
-				model.train(labeled_features[noise_type])
+				with redirect_stdout(sys.stderr if silent else sys.stdout):
+					model.train(labeled_features[noise_type], config=self.config)
 				
-				if save_models_to is not None:
-					if not os.path.exists(save_models_to):
-						if verbose:
-							print(f"Creating folder {save_models_to}")
-						os.mkdir(save_models_to)
-					model.save_to_file(os.path.join(save_models_to, self.filename(noise_type)))
-	
-	def label(self, features, return_scores=False):
-		if self.model_type.MULTICLASS:
-			scores = self.model.score(features)
-			predicted_class = np.argmax(scores, axis=1)
-			noise_types = np.array(self.model.get_noise_types())
+				if models_folder is not None:
+					if not silent:
+						print("Saving intermediate classifier")
+					self.save_to_file(
+						folder=models_folder,
+						filename=f"intermediate_{self.model_type.__name__}.classifier",
+						verbose=not silent
+					)
 
+			if not silent:
+				print("Removing intermediate file")
+			os.remove(os.path.join(models_folder, f"intermediate_{self.model_type.__name__}.classifier"))
+	
+	def label(self, features, return_scores=False, silent=False):
+		if "score" in self.config:
+			kwargs = self.config["score"]
 		else:
-			scores = []
-			noise_types = []
-			for noise_type, model in self.models.items():
-				scores.append(model.score(features))
-				noise_types.append(noise_type)
-			scores = np.column_stack(scores)
-			predicted_class = np.argmax(scores, axis=1)
-			noise_types = np.array(noise_types)
+			kwargs = dict()
+
+		with redirect_stdout(sys.stderr if silent else sys.stdout):
+			if self.model_type.MULTICLASS:
+				scores = self.model.score(features, **kwargs)
+				predicted_class = np.argmax(scores, axis=1)
+				noise_types = np.array(self.model.get_noise_types())
+
+			else:
+				scores = []
+				noise_types = []
+				for noise_type, model in self.models.items():
+					scores.append(model.score(features, **kwargs))
+					noise_types.append(noise_type)
+				scores = np.column_stack(scores)
+				predicted_class = np.argmax(scores, axis=1)
+				noise_types = np.array(noise_types)
 			
 		return (predicted_class, noise_types) + ((scores,) if return_scores else ())
 			
-	def test(self, labeled_features) -> ConfusionTable:
+	def test(self, labeled_features, silent=False) -> ConfusionTable:
 		res = ConfusionTable(
 			sorted(labeled_features.keys()),
 			sorted(self.model.get_noise_types() if self.model_type.MULTICLASS else self.models.keys())
@@ -63,7 +86,7 @@ class Classifier:
 		start = time()
 
 		for noise_type, features in labeled_features.items():
-			predicted_class, noise_types = self.label(features)
+			predicted_class, noise_types = self.label(features, silent=silent)
 			for confused_type in res.confused_labels:
 				idx, = np.argwhere(noise_types == confused_type)
 				res[noise_type, confused_type] = sum(predicted_class == idx)
@@ -73,13 +96,19 @@ class Classifier:
 			
 		return res
 
+
+	def save_to_file(self, filename, folder=None, verbose=False):
+		if folder is not None and not os.path.exists(folder):
+			if verbose:
+				print(f"Creating folder {folder}")
+			os.mkdir(folder)
+		if folder is not None:
+			filename = os.path.join(folder, filename)
+		with open(filename, 'wb') as f:
+			pickle.dump(self, f)
 	
 	@staticmethod
-	def from_file(*, filename=None, folder=None, model_type=None) -> 'Classifier':
-		if filename is None:
-			if model_type is None:
-				raise ValueError()
-			filename = model_type + ".classifier"
+	def from_file(filename, folder=None) -> 'Classifier':
 		if folder is not None:
 			filename = os.path.join(folder, filename)
 		with open(filename, 'rb') as f:
@@ -88,22 +117,19 @@ class Classifier:
 				return classifier
 			else:
 				raise ValueError(f"File {filename} does not contain a Classifier")
-
-	def save_to_file(self, *, folder=None, filename=None):
-		if folder is not None and not os.path.exists(folder):
-			print(f"Creating folder {folder}")
-			os.mkdir(folder)
-		filename = filename or self.filename()
-		if folder is not None:
-			filename = os.path.join(folder, filename)
-		with open(filename, 'wb') as f:
-			pickle.dump(self, f)
-	
-	def filename(self, noise_type=None):
-		if noise_type is None:
-			return self.model_type.__name__ + ".classifier"
+	@staticmethod
+	def from_bytes(b: bytes):
+		c = pickle.loads(b)
+		if isinstance(c, Classifier):
+			yield c
 		else:
-			return self.model_type.__name__ + "_" + noise_type + ".model"
+			# Assume iterable
+			for classifier in c:
+				if not isinstance(classifier, Classifier):
+					raise ValueError(f"Non-classifier in input")
+				else:
+					yield classifier
+
 	@staticmethod
 	def find_classifiers(folder):
 		files = next(os.walk(folder, followlinks=True))[2]
@@ -136,6 +162,7 @@ def train(args):
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
 	from model_svm import SVM
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
 
 	if args.data is None:
 		args.data = ""
@@ -144,39 +171,70 @@ def train(args):
 	if not os.path.exists(args.models):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
+	
+	if len(args.write) == 1:
+		args.write = args.write[0]
+	if isinstance(args.write, str):
+		if "<type>" not in args.write.lower() and len(args.classifiers) != 1:
+			print("Invalid write specifier")
+			sys.exit(1)
+	elif len(args.write) != 0 and len(args.write) != (len(args.classifiers) or len(supported_classifiers)):
+		print(f"Invalid number of write files ({len(args.write)}, expected 0 or {len(args.classifiers) or len(supported_classifiers)})")
+		sys.exit(1)
 
-	feats = extract_mfcc(args.train, args.recompute)
+	if args.config_stdin:
+		config = json.loads(input())
+	else:
+		with open(args.config, "r") as f:
+			config = json.load(f)
+	
+	args.silent = args.silent or args.write_stdout
+	
+	if args.override:
+		for path, value in args.override:
+			d = config
+			path = path.split(".")
+			for i, part in enumerate(path[:-1]):
+				possible = [k for k in d.keys() if k.lower() == part]
+				if len(possible) == 0:
+					if not args.silent:
+						print("Creating config key", path[:i+1])
+					d[part] = dict()
+					possible = [part]
+				d = d[possible[0]]
+			d[path[-1]] = json.loads(value)
+
+	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
+		feats = extract_mfcc(args.train, args.recompute)
 
 	classifiers = []
-	"""
-	n = 3
-	K = 2
-	niter = 5
-	classifiers.append(Classifier(feats.keys(), GMMHMM,
-		n_components=n, n_mix=K, covariance_type="diag",
-		tol=-np.inf, n_iter=niter, verbose=True
-	))
-	
-	# Verkar bara fungera när net_D är 12??????
-	classifiers.append(Classifier(feats.keys(), GenHMM,
-		n_states=3, n_prob_components=2, em_skip=4, device="cpu",
-		lr=0.004, net_H=24, net_D=12, net_nchain=4, p_drop=0,
-		mask_type="cross", startprob_type="first", transmat_type="triangular"
-	))
-	"""
-	classifiers.append(Classifier(feats.keys(), LSTM,
-		hidden_dim=20, num_layers=2
-	))
-	"""
-	classifiers.append(Classifier(feats.keys(), SVM,
-		frame_len=20, frame_overlap=5
-	))
-	"""
+	for supported_classifier in supported_classifiers:
+		if len(args.classifiers) == 0 or supported_classifier.__name__.lower() in args.classifiers:
+			classifiers.append(Classifier(feats.keys(), supported_classifier, config, silent=args.silent))
 
-	for classifier in classifiers:
-		classifier.train(feats, save_models_to=args.models)
-		classifier.save_to_file(folder=args.models)
-	print("Done")
+	for i, classifier in enumerate(classifiers):
+		classifier.train(feats, silent=args.silent, models_folder=args.models)
+		if isinstance(args.write, str):
+			classifier.save_to_file(
+				filename=re.sub(
+					"<type>",
+					classifier.model_type.__name__,
+					args.write,
+					flags=re.IGNORECASE), 
+				folder=args.models
+			)
+		elif len(args.write) == len(classifiers):
+			classifier.save_to_file(
+				filename=args.write[i], 
+				folder=args.models
+			)
+
+	if args.write_stdout:
+		sys.stdout.buffer.write(pickle.dumps(classifiers))
+
+	if not args.silent:
+		print("Done")
+
 
 def test(args):
 	if args.kaldi is None:
@@ -190,6 +248,7 @@ def test(args):
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
 	from model_svm import SVM
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
 
 	if args.data is None:
 		args.data = ""
@@ -198,29 +257,86 @@ def test(args):
 	if not os.path.exists(args.models):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
-
-	feats = extract_mfcc(args.test, args.recompute)
 	
-	print("Reading classifiers ...", end="", flush=True)
-	classifiers = [Classifier.from_file(filename=f) for f in Classifier.find_classifiers(args.models)]
-	print(" Done")
+	args.silent = args.silent or args.write_stdout
+
+	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
+		feats = extract_mfcc(args.train, args.recompute)
+
+	if not args.silent:
+		print("Reading classifiers ...", end="", flush=True)
+	if args.read_stdin:
+		classifiers = [c for c in Classifier.from_bytes(sys.stdin.buffer.read())]
+	else:
+		classifiers = []
+	for f in args.read:
+		if "<type>" in f.lower():
+			f = [re.sub("<type>", c.__name__, f, flags=re.IGNORECASE) for c in supported_classifiers]
+		else:
+			f = [f]
+		for fn in f:
+			classifiers.append(Classifier.from_file(fn, folder=args.models))
+	if not args.silent:
+		print(" Done")
 
 	if len(classifiers) == 0:
 		print("Found no classifiers")
 		sys.exit(1)
-	print(f"Found classifiers: {', '.join(c.model_type.__name__ for c in classifiers)}")
-	
-	print("Calculating scores ...", flush=True)
+	if not args.silent:
+		print(f"Loaded {len(classifiers)} classifier{'' if len(classifiers) == 1 else 's'}.")
+
+		print("Calculating scores ...", flush=True)
 	confusion_tables = []
 	for classifier in classifiers:
-		print(classifier.model_type.__name__)
+		if not args.silent:
+			print(classifier.model_type.__name__)
 		confusion_tables.append(classifier.test(feats))
-	print("Done")
+	if not args.silent:
+		print("Done")
 	
-	for classifier, confusion_table in zip(classifiers, confusion_tables):
-		print("Confusion table for", classifier.model_type.__name__)
-		print(confusion_table)
-		print()
+		for classifier, confusion_table in zip(classifiers, confusion_tables):
+			print("Confusion table for", classifier.model_type.__name__)
+			print(confusion_table)
+			print()
+	
+	if args.write_stdout:
+		sys.stdout.buffer.write(pickle.dumps(confusion_tables))
+
+def ls(args):
+	if args.kaldi is None:
+		get_kaldi_root(assign=True)
+	else:
+		os.environ['KALDI_ROOT'] = args.kaldi
+	allow_gm_hmm_import(args.gm_hmm)
+	import kaldi_io
+	from feature_extraction import extract_mfcc
+	from model_gmmhmm import GMMHMM
+	from model_genhmm import GenHMM
+	from model_lstm import LSTM
+	from model_svm import SVM
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
+
+	if not os.path.exists(args.models):
+		print("Models folder does not exist: " + args.models)
+		sys.exit(1)
+
+	classifiers = []
+	for f in Classifier.find_classifiers(args.models):
+		c = Classifier.from_file(f, folder=args.models)
+		classifiers.append([
+			os.path.basename(f),
+			c.model_type.__name__,
+			str(os.path.getsize(f))
+		])
+	
+	if len(classifiers) > 0:
+		classifiers = [["Filename", "Model Type", "Size in Bytes"]] + classifiers
+		widths = [max(len(classifiers[row][i]) for row in range(len(classifiers))) for i in range(3)]
+		print("  ".join(classifiers[0][i].ljust(widths[i]) for i in range(3)))
+		for row in classifiers[1:]:
+			print("  ".join(row[i].rjust(widths[i]) for i in range(3)))
+	else:
+		print(f"No classifiers in {args.models}")
 	
 
 def test_vad(args):
@@ -242,14 +358,15 @@ def test_vad(args):
 			print(f"\tVAD aggressiveness {agg} flags {speech/total:.0%} as speech")
 
 if __name__ == "__main__":
+	supported_types = ["GenHMM", "GMMHMM", "LSTM", "SVM"]
 	parser = argparse.ArgumentParser(
 		prog="classifier.py",
-		description="Train or test the classifier"
+		description="Train or test a classifier. Supported types: " + ", ".join(supported_types)
 	)
 	parser.set_defaults(func=lambda a: parser.print_usage())
 	subparsers = parser.add_subparsers()
 
-	parser.add_argument("--profile", help="Profile the classifier", action="store_true")
+	parser.add_argument("--profile", help="Profile the script", action="store_true")
 
 	group = parser.add_argument_group("input folders")
 	group.add_argument("--data", help="Path to data folder (default: $PWD/data)", default=os.path.join(os.getcwd(), "data"))
@@ -263,15 +380,38 @@ if __name__ == "__main__":
 	subparser.set_defaults(func=train)
 
 	subparser.add_argument("-r", "--recompute", help="Ignore saved features and recompute", action="store_true")
+	subparser.add_argument("-c", "--classifiers", help=f"Classes to train. If none are specified, all types are trained. Available: {', '.join(supported_types)}.", metavar="TYPE",
+							nargs="*", choices=list(map(str.lower, supported_types))+[[]], type=str.lower)
+	subparser.add_argument("-o", "--override", help="Override a classifier parameter. PATH takes the form 'classifier.category.parameter'.", nargs=2, metavar=("PATH", "VALUE"), action="append")
+	subparser.add_argument("-s", "--silent", help="Suppress all informational output on stdout (certain output is instead routed to stderr)", action="store_true")
+	
+	out = subparser.add_argument_group("Classifier output")
+	out.add_argument("-w", "--write", help="Files relative to <MODELS> to save classifier(s) to. Must be 0, 1 (containing <TYPE>), or same as number of classes. Default: %(default)s", metavar="FILE", nargs="*", default="latest_<TYPE>.classifier")
+	out.add_argument("--write-stdout", help="Write resulting classifiers to stdout. Implies --silent.", action="store_true")
+
+	configs = subparser.add_mutually_exclusive_group()
+	configs.add_argument("--config", help="Path to classifier config file (default: $PWD/classifier/defaults.json)", default=os.path.join(os.getcwd(), "classifier", "defaults.json"))
+	configs.add_argument("--config-stdin", help="Read config from stdin", action="store_true")
 
 	subparser = subparsers.add_parser("test", help="Perform testing")
 	subparser.set_defaults(func=test)
 
 	subparser.add_argument("-r", "--recompute", help="Ignore saved features and recompute", action="store_true")
+	subparser.add_argument("-s", "--silent", help="Suppress all informational output on stdout (certain output is instead routed to stderr)", action="store_true")
+	subparser.add_argument("--write-stdout", help="Write resulting confusion tables to stdout. Implies --silent.", action="store_true")
 
+	inp = subparser.add_argument_group("Classifier input")
+	inp.add_argument("read", help="Files relative to <MODELS> to read classifier(s) from. '<TYPE>' can be used in FILE to match all classifier type names. Default: %(default)s", metavar="FILE", nargs="*", default="latest_<TYPE>.classifier")
+	inp.add_argument("--read-stdin", help="Read classifiers from stdin", action="store_true")
+
+	"""
 	group = subparser.add_argument_group("Voice Activity Detection settings")
 	group.add_argument("-a", "--aggressiveness", help="VAD aggressiveness (0-3, default: %(default)d). Increase to flag more frames as non-speech.", default=2, type=int)
 	group.add_argument("--vad-frame-length", help="VAD frame length in ms (10, 20 or 30, default: %(default)d)", default=20, type=int)
+	"""
+
+	subparser = subparsers.add_parser("ls", help="List all classifiers in <MODELS>")
+	subparser.set_defaults(func=ls)
 
 	subparser = subparsers.add_parser("test-vad", help="Try all combinations of VAD parameters and list statistics")
 	subparser.set_defaults(func=test_vad)
@@ -283,4 +423,5 @@ if __name__ == "__main__":
 	else:
 		start = time()
 		args.func(args)
-		print(f"Total time: {time() - start:.1f} s")
+		if ("silent" not in vars(args) or not args.silent) and ("write_stdout" not in vars(args) or not args.write_stdout):
+			print(f"Total time: {time() - start:.1f} s")

@@ -4,6 +4,7 @@ kaldi
 matlab
 gm_hmm
 classifier/models/*
+classifier/search/*
 data/audio-degradation-toolbox/
 data/matlab-audio-degradation-toolbox/
 data/timit/*

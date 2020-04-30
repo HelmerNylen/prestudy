@@ -1,0 +1,63 @@
+{
+	"GenHMM": {
+		"parameters": {
+			"n_states": [2, 3, 5],
+			"n_prob_components": [2, 3, 4],
+			"em_skip": [3, 5, 7],
+			"device": "cpu",
+			"lr": [0.001, 0.004, 0.010],
+			"net_H": [16, 24, 32],
+			"net_D": [8, 12, 13, 16],
+			"net_nchain": [4, 6],
+			"p_drop": [0, 0.2],
+			"mask_type": "cross",
+			"startprob_type": "first",
+			"transmat_type": "triangular"
+		},
+		"train": {
+			"batch_size": 96,
+			"n_iter": [4, 8],
+			"force_cpu": false
+		}
+	},
+	"GMMHMM": {
+		"parameters": {
+			"n_components": [2, 3, 4, 5, 6],
+			"n_mix": [2, 3, 4, 5],
+			"covariance_type": "diag"
+		},
+		"train": {
+			"n_iter": [5, 10],
+			"verbose": false,
+			"tol": "-inf"
+		}
+	},
+	"LSTM": {
+		"parameters": {
+			"num_layers": [1, 2, 3, 4],
+			"dropout": [0, 0.2],
+			"hidden_dim": [10, 20, 30]
+		},
+		"train": {
+			"learning_rate": [0.001, 0.005, 0.020],
+			"batch_size": 256,
+			"n_iter": [4, 8],
+			"verbose": false
+		}
+	},
+	"SVM": {
+		"parameters": {
+			"C": [0.01, 0.1, 1.0, 3.0],
+			"gamma": [0.010, "scale", 0.001, 0.0003],
+			"cache_size": 2000,
+			"frame_len": [10, 20, 30],
+			"frame_overlap": [0, 5],
+			"kernel": "rbf"
+		},
+		"train": {
+			"tol": 1e-3,
+			"max_iter": -1,
+			"verbose": false
+		}
+	}
+}

@@ -49,7 +49,7 @@
 		"parameters": {
 			"C": 1.0,
 			"gamma": "scale",
-			"cache_size": 1000,
+			"cache_size": 2000,
 			"frame_len": 20,
 			"frame_overlap": 5,
 			"kernel": "rbf"

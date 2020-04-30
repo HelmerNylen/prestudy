@@ -261,7 +261,7 @@ def test(args):
 	args.silent = args.silent or args.write_stdout
 
 	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
-		feats = extract_mfcc(args.train, args.recompute)
+		feats = extract_mfcc(args.test, args.recompute)
 
 	if not args.silent:
 		print("Reading classifiers ...", end="", flush=True)
@@ -391,6 +391,7 @@ if __name__ == "__main__":
 
 	configs = subparser.add_mutually_exclusive_group()
 	configs.add_argument("--config", help="Path to classifier config file (default: $PWD/classifier/defaults.json)", default=os.path.join(os.getcwd(), "classifier", "defaults.json"))
+	# Not working
 	configs.add_argument("--config-stdin", help="Read config from stdin", action="store_true")
 
 	subparser = subparsers.add_parser("test", help="Perform testing")

@@ -80,63 +80,69 @@ def main(args):
 	
 	permutations.shuffle()
 	i = 0
-	for classifier_type, config, x in permutations:
-		with NamedTemporaryFile("w") as configFile:
-			print(f"Number {i} of {len(permutations)}")
-			with open(configFile.name, "w") as f:
-				json.dump({classifier_type: config}, f)
-			# Train
-			command = [
-				os.path.join(args.classifier, "classifier.py"),
-				"--models", args.saveto,
-				"train",
-				"-s",
-				"-c", classifier_type.lower(),
-				"--config", configFile.name,
-				"-w", "current.classifier"
-			]
-			print(*command)
-			result = subprocess.run(
-				command,
-				encoding=sys.getdefaultencoding(),
-				stderr=subprocess.PIPE, stdout=subprocess.PIPE
-			)
-			while result.returncode and classifier_type.lower() == "genhmm" and config["train"]["batch_size"] > 16:
-				# Try decreasing batch size and try again
-				print(f"Decreasing batch size to {int(config['train']['batch_size'] / 2)} and trying again")
-				config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
+	for current_classifier_type in ['LSTM', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
+		print(f"Classifier: {current_classifier_type}, {permutations.totallengths[current_classifier_type]} total configs")
+		for classifier_type, config, x in permutations:
+			if classifier_type != current_classifier_type:
+				continue
+			with NamedTemporaryFile("w") as configFile:
+				print(f"Number {i} of {len(permutations)}")
+				i += 1
+				with open(configFile.name, "w") as f:
+					json.dump({classifier_type: config}, f)
+
+				# Train
+				command = [
+					os.path.join(args.classifier, "classifier.py"),
+					"--models", args.saveto,
+					"train",
+					"-s",
+					"-c", classifier_type.lower(),
+					"--config", configFile.name,
+					"-w", "current.classifier"
+				]
+				print(*command)
 				result = subprocess.run(
 					command,
 					encoding=sys.getdefaultencoding(),
 					stderr=subprocess.PIPE, stdout=subprocess.PIPE
 				)
+				while result.returncode and classifier_type.lower() == "genhmm" and config["train"]["batch_size"] > 16:
+					# Try decreasing batch size and try again
+					print(f"Decreasing batch size to {int(config['train']['batch_size'] / 2)} and trying again")
+					config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
+					result = subprocess.run(
+						command,
+						encoding=sys.getdefaultencoding(),
+						stderr=subprocess.PIPE, stdout=subprocess.PIPE
+					)
+				if result.returncode:
+					print("Could not train", json.dumps({classifier_type: config}))
+					print("Error:", result.stderr)
+					continue
+			# Test
+			command = [
+				os.path.join(args.classifier, "classifier.py"),
+				"--models", args.saveto,
+				"test",
+				"--write-stdout",
+				"current.classifier"
+			]
+			print(*command)
+			result = subprocess.run(
+				command,
+				stdout=subprocess.PIPE
+			)
 			if result.returncode:
-				print("Could not train", json.dumps({classifier_type: config}))
-				print("Error:", result.stderr)
+				print("Could not test", json.dumps({classifier_type: config}))
 				continue
-		# Test
-		command = [
-			os.path.join(args.classifier, "classifier.py"),
-			"--models", args.saveto,
-			"test",
-			"--write-stdout",
-			"current.classifier"
-		]
-		print(*command)
-		result = subprocess.run(
-			command,
-			stdout=subprocess.PIPE
-		)
-		if result.returncode:
-			print("Could not test", json.dumps({classifier_type: config}))
-			continue
-		confusion_table, = pickle.loads(result.stdout)
-		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
-			pickle.dump(confusion_table, f)
-		copy2(
-			os.path.join(args.saveto, "current.classifier"),
-			os.path.join(args.saveto, str(x) + ".classifier")
-		)
+			confusion_table, = pickle.loads(result.stdout)
+			with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
+				pickle.dump(confusion_table, f)
+			copy2(
+				os.path.join(args.saveto, "current.classifier"),
+				os.path.join(args.saveto, str(x) + ".classifier")
+			)
 	print("All done")
 
 if __name__ == "__main__":

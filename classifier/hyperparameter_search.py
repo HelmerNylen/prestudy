@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+import select
 import subprocess
 import pickle
 import numpy as np
@@ -37,6 +38,7 @@ class ConfigPermutations:
 	def __getitem__(self, x):
 		assert 0 <= x < len(self)
 		x = self.current_shuffle[x]
+		inner_x = x
 		_type = None
 		for _t, l in self.totallengths.items():
 			if x >= l:
@@ -56,16 +58,81 @@ class ConfigPermutations:
 					combination_idx += 1
 				else:
 					config[category][key] = self.search[_type][category][key]
-		return _type, config, x
+		return _type, config, inner_x
 	def __iter__(self):
 		for x in range(len(self)):
 			yield self[x]
 
-def main(args):
-	if args.json is None:
-		args.json = os.path.join(args.classifier, "search.json")
+def train_test_config(classifier_type, config, x, genhmm_min_batch):
+	if genhmm_min_batch < 1: genhmm_min_batch = 1
+	with NamedTemporaryFile("w") as configFile:
+		with open(configFile.name, "w") as f:
+			json.dump({classifier_type: config}, f)
+		print(f"{x}: {config}")
+
+		# Train
+		command = [
+			os.path.join(args.classifier, "classifier.py"),
+			"--models", args.saveto,
+			"train",
+			"-s",
+			"-c", classifier_type.lower(),
+			"--config", configFile.name,
+			"-w", "current.classifier"
+		]
+		print(*command)
+		result = subprocess.run(
+			command,
+			encoding=sys.getdefaultencoding(),
+			stderr=subprocess.PIPE, stdout=subprocess.PIPE
+		)
+		while result.returncode and classifier_type.lower() == "genhmm" and int(config["train"]["batch_size"]/2) >= 1:
+			# Try decreasing batch size and try again
+			config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
+			print(f"Decreasing batch size to {config['train']['batch_size']} and trying again")
+			result = subprocess.run(
+				command,
+				encoding=sys.getdefaultencoding(),
+				stderr=subprocess.PIPE, stdout=subprocess.PIPE
+			)
+		if result.returncode:
+			print("Could not train", json.dumps({classifier_type: config}))
+			print("Error:", result.stderr)
+			return
+	# Test
+	command = [
+		os.path.join(args.classifier, "classifier.py"),
+		"--models", args.saveto,
+		"test",
+		"--write-stdout",
+		"current.classifier"
+	]
+	print(*command)
+	result = subprocess.run(
+		command,
+		stdout=subprocess.PIPE
+	)
+	if result.returncode:
+		print("Could not test", json.dumps({classifier_type: config}))
+		return
+	confusion_table, = pickle.loads(result.stdout)
+	with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
+		pickle.dump(confusion_table, f)
+	copy2(
+		os.path.join(args.saveto, "current.classifier"),
+		os.path.join(args.saveto, str(x) + ".classifier")
+	)
+
+def search(args):
 	if args.saveto is None:
 		args.saveto = os.path.join(args.classifier, "search")
+	if args.json is None:
+		if getattr(args, "continue"):
+			args.json = os.path.join(args.saveto, "search.json")
+			if not os.path.exists(args.json):
+				raise ValueError(f"Cannot continue search as {args.json} does not exist")
+		else:
+			args.json = os.path.join(args.classifier, "search.json")
 
 	with open(args.json, "r") as f:
 		search = json.load(f)
@@ -78,83 +145,227 @@ def main(args):
 	with open(os.path.join(args.saveto, "search.json"), "w") as f:
 		json.dump(search, f)
 	
+	print("Type 'stop' and press enter to stop the search after the next completed config")
+	print()
+
 	permutations.shuffle()
 	i = 0
-	for current_classifier_type in ['LSTM', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
-		print(f"Classifier: {current_classifier_type}, {permutations.totallengths[current_classifier_type]} total configs")
-		for classifier_type, config, x in permutations:
-			if classifier_type != current_classifier_type:
+	total = len(permutations) - sum(permutations.totallengths[t] for t in permutations.types if t.lower() in map(str.lower, args.types))
+	if args.group:
+		for current_classifier_type in ['LSTM', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
+			if len(args.types) > 0 and current_classifier_type.lower() not in map(str.lower, args.types):
+				print("Skipping", current_classifier_type)
 				continue
-			with NamedTemporaryFile("w") as configFile:
-				print(f"Number {i} of {len(permutations)}")
-				i += 1
-				with open(configFile.name, "w") as f:
-					json.dump({classifier_type: config}, f)
 
-				# Train
-				command = [
-					os.path.join(args.classifier, "classifier.py"),
-					"--models", args.saveto,
-					"train",
-					"-s",
-					"-c", classifier_type.lower(),
-					"--config", configFile.name,
-					"-w", "current.classifier"
-				]
-				print(*command)
-				result = subprocess.run(
-					command,
-					encoding=sys.getdefaultencoding(),
-					stderr=subprocess.PIPE, stdout=subprocess.PIPE
-				)
-				while result.returncode and classifier_type.lower() == "genhmm" and config["train"]["batch_size"] > 16:
-					# Try decreasing batch size and try again
-					print(f"Decreasing batch size to {int(config['train']['batch_size'] / 2)} and trying again")
-					config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
-					result = subprocess.run(
-						command,
-						encoding=sys.getdefaultencoding(),
-						stderr=subprocess.PIPE, stdout=subprocess.PIPE
-					)
-				if result.returncode:
-					print("Could not train", json.dumps({classifier_type: config}))
-					print("Error:", result.stderr)
+			print(f"Classifier: {current_classifier_type}, {permutations.totallengths[current_classifier_type]} total configs")
+			for classifier_type, config, x in permutations:
+				if classifier_type != current_classifier_type:
 					continue
-			# Test
-			command = [
-				os.path.join(args.classifier, "classifier.py"),
-				"--models", args.saveto,
-				"test",
-				"--write-stdout",
-				"current.classifier"
-			]
-			print(*command)
-			result = subprocess.run(
-				command,
-				stdout=subprocess.PIPE
-			)
-			if result.returncode:
-				print("Could not test", json.dumps({classifier_type: config}))
+				i += 1
+				if getattr(args, "continue") and os.path.exists(os.path.join(args.saveto, str(x) + ".classifier")):
+					print(f"Classifier {x} already exists")
+					continue
+
+				print(f"Number {i} of {total}")
+				train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch)
+				
+				try:
+					if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower().endswith("stop"):
+						print("Stopping search. Use the --continue flag to resume search.")
+						return
+				except:
+					pass
+
+	else:
+		for classifier_type, config, x in permutations:
+			if len(args.types) > 0 and classifier_type.lower() not in map(str.lower, args.types):
 				continue
-			confusion_table, = pickle.loads(result.stdout)
-			with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
-				pickle.dump(confusion_table, f)
-			copy2(
-				os.path.join(args.saveto, "current.classifier"),
-				os.path.join(args.saveto, str(x) + ".classifier")
-			)
+
+			i += 1
+			if getattr(args, "continue") and os.path.exists(os.path.join(args.saveto, str(x) + ".classifier")):
+				print(f"Classifier {x} already exists")
+				continue
+
+			print(f"Number {i} of {total}")
+			train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch)
+
+			try:
+				if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower().endswith("stop"):
+					print("Stopping search. Use the --continue flag to resume search.")
+					return
+			except:
+				pass
+			
 	print("All done")
 
+def results(args):
+	if args.saveto is None:
+		args.saveto = os.path.join(args.classifier, "search")
+	
+	with open(os.path.join(args.saveto, "search.json"), "r") as f:
+		search = json.load(f)
+	permutations = ConfigPermutations(search)
+
+	files = next(os.walk(args.saveto))[2]
+	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
+	files = files
+
+	print(f"{len(files)} of {len(permutations)} classifiers in folder")
+	for classifier_type in permutations.types:
+		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
+
+	bestPrecision = None
+	bestRecall = None
+	bestAvgAcc = None
+	for fn in files:
+		x = int(fn)
+		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
+			confusiontable = pickle.load(f)
+		if bestPrecision is None:
+			bestPrecision = {label: (-1, -1) for label in confusiontable.true_labels}
+			bestRecall = {label: (-1, -1) for label in confusiontable.true_labels}
+			bestAvgAcc = (-1, -1)
+
+		for label in confusiontable.true_labels:
+			positives = sum(confusiontable[l, label] for l in confusiontable.true_labels)
+			if positives == 0:
+				precision = 0
+			else:
+				precision = confusiontable[label, label] / positives
+			recall = confusiontable[label, label] / confusiontable[label, ...]
+			if precision > bestPrecision[label][0]:
+				bestPrecision[label] = (precision, x)
+			if recall > bestRecall[label][0]:
+				bestRecall[label] = (recall, x)
+		avgAcc = sum(confusiontable[label, label] / confusiontable[label, ...] for label in confusiontable.true_labels) / len(confusiontable.true_labels)
+		if avgAcc > bestAvgAcc[0]:
+			bestAvgAcc = (avgAcc, x)
+
+	
+	print("-- Recall --")
+	for label in bestRecall:
+		print(f"Label: {label}, best: {bestRecall[label][0]:.2%} by model {bestRecall[label][1]}")
+	print()
+	print("-- Precision --")
+	for label in bestPrecision:
+		print(f"Label: {label}, best: {bestPrecision[label][0]:.2%} by model {bestPrecision[label][1]}")
+	print()
+	print(f"Best average accuracy: {bestAvgAcc[0]:.2%} by model {bestAvgAcc[1]}")
+	print()
+
+	all_ids = set(x for _, x in bestRecall.values()).union(x for _, x in bestPrecision.values()).union([bestAvgAcc[1]])
+	for x in all_ids:
+		print(x)
+		print(permutations[x][0])
+		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
+			confusiontable = pickle.load(f)
+		print(confusiontable)
+
+def repair(args):
+	sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
+	from classifier import Classifier
+	globals()["Classifier"] = Classifier
+
+	def fix_inf(d: dict) -> dict:
+		for key in d.keys():
+			if type(d[key]) is dict:
+				d[key] = fix_inf(d[key])
+			elif type(d[key]) is float and d[key] == np.inf:
+				d[key] = "inf"
+			elif type(d[key]) is float and d[key] == -np.inf:
+				d[key] = "-inf"
+		return d
+	
+	if args.saveto is None:
+		args.saveto = os.path.join(args.classifier, "search")
+	
+	with open(os.path.join(args.saveto, "search.json"), "r") as f:
+		search = json.load(f)
+	permutations = ConfigPermutations(search)
+
+	files = next(os.walk(args.saveto))[2]
+	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
+	files = files
+
+	print(f"Found {len(files)} files")
+	equivalents = []
+	for fn in files:
+		c = Classifier.from_file(fn + ".classifier", folder=args.saveto)
+		current_type = c.model_type.__name__.lower()
+		x = int(fn)
+		best_guess = x
+		for t, l in permutations.totallengths.items():
+			if current_type == t.lower():
+				break
+			best_guess += l
+		best_guess_ct, best_guess_config, best_guess_x = permutations[best_guess]
+
+		if best_guess_ct.lower() == current_type and json.dumps(fix_inf(best_guess_config)) == json.dumps(fix_inf(c.config)):
+			print(end=".", flush=True)
+			equivalents.append(best_guess_x)
+		else:
+			for ct, config, identifier in permutations:
+				if ct.lower() == current_type and json.dumps(fix_inf(config)) == json.dumps(fix_inf(c.config)):
+					print(end=".", flush=True)
+					equivalents.append(identifier)
+					break
+			else:
+				print("Suggested:\n", json.dumps(permutations[best_guess][1]))
+				print("True:\n", json.dumps(c.config))
+				raise ValueError("Couldn't find equivalents for all")
+	print()
+	may_overwrite = False
+	for original, new in zip(files, map(str, equivalents)):
+		print(f"{original}\t->\t{new}")
+		if new in files and new != original:
+			may_overwrite = True
+	if may_overwrite:
+		print("This may cause an overwrite")
+	if input("Proceed (y/n)? ").strip().lower()[-1] != "y":
+		return
+	
+	for original, new in zip(files, map(str, equivalents)):
+		if original != new:
+			os.rename(
+				os.path.join(args.saveto, original + ".classifier"),
+				os.path.join(args.saveto, new + ".classifier")
+			)
+			os.rename(
+				os.path.join(args.saveto, original + ".confusiontable"),
+				os.path.join(args.saveto, new + ".confusiontable")
+			)
+			print(end=".", flush=True)
+	print("Done")
+	
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(
 		prog="hyperparameter_search.py",
 		description="Perform hyperparameter search on classifier.py"
 	)
+	parser.set_defaults(func=lambda a: parser.print_usage())
+	subparsers = parser.add_subparsers()
+
 	parser.add_argument("-c", "--classifier", help="Prestudy classifier folder (default: $PWD/classifier)", default=os.path.join(os.getcwd(), "classifier"))
-	parser.add_argument("-j", "--json", help="JSON file with search options (default: <CLASSIFIER>/search.json)", default=None)
 	parser.add_argument("-s", "--saveto", help="Folder to save classifiers and stats to (default: <CLASSIFIER>/search)", default=None)
+
+	subparser = subparsers.add_parser("search", help="Perform a search")
+	subparser.set_defaults(func=search)
+
+	subparser.add_argument("-g", "--group", help="Group tested configurations by type", action="store_true")
+	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers", nargs="+", default=[])
+	subparser.add_argument("--genhmm-min-batch", help="Set minimum batch size of the GenHMM", type=int, default=1)
+
+	group = subparser.add_mutually_exclusive_group()
+	group.add_argument("-j", "--json", help="JSON file with search options (default: <CLASSIFIER>/search.json)", default=None)
+	group.add_argument("--continue", help="Continue the search in SAVETO.", action="store_true")
+
+	subparser = subparsers.add_parser("results", help="Show the results of a search")
+	subparser.set_defaults(func=results)
+
+	subparser = subparsers.add_parser("repair", help="Repair a search where the relative configuration indexes have been used as filenames rather than the global ones")
+	subparser.set_defaults(func=repair)
 
 	args = parser.parse_args()
 	start = time()
-	main(args)
+	args.func(args)
 	print(f"Total time: {time() - start:.1f} s")

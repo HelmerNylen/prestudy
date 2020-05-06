@@ -42,7 +42,8 @@
 			"learning_rate": [0.001, 0.005, 0.020],
 			"batch_size": 256,
 			"n_iter": [4, 8],
-			"verbose": false
+			"verbose": false,
+			"force_cpu": false
 		}
 	},
 	"SVM": {

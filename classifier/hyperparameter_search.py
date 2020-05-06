@@ -63,7 +63,7 @@ class ConfigPermutations:
 		for x in range(len(self)):
 			yield self[x]
 
-def train_test_config(classifier_type, config, x, genhmm_min_batch):
+def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate_name):
 	if genhmm_min_batch < 1: genhmm_min_batch = 1
 	with NamedTemporaryFile("w") as configFile:
 		with open(configFile.name, "w") as f:
@@ -78,7 +78,7 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch):
 			"-s",
 			"-c", classifier_type.lower(),
 			"--config", configFile.name,
-			"-w", "current.classifier"
+			"-w", intermediate_name
 		]
 		print(*command)
 		result = subprocess.run(
@@ -105,7 +105,7 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch):
 		"--models", args.saveto,
 		"test",
 		"--write-stdout",
-		"current.classifier"
+		intermediate_name
 	]
 	print(*command)
 	result = subprocess.run(
@@ -118,8 +118,8 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch):
 	confusion_table, = pickle.loads(result.stdout)
 	with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
 		pickle.dump(confusion_table, f)
-	copy2(
-		os.path.join(args.saveto, "current.classifier"),
+	os.rename(
+		os.path.join(args.saveto, intermediate_name),
 		os.path.join(args.saveto, str(x) + ".classifier")
 	)
 
@@ -150,9 +150,9 @@ def search(args):
 
 	permutations.shuffle()
 	i = 0
-	total = len(permutations) - sum(permutations.totallengths[t] for t in permutations.types if t.lower() in map(str.lower, args.types))
+	total = sum(permutations.totallengths[t] for t in permutations.types if t.lower() in map(str.lower, args.types))
 	if args.group:
-		for current_classifier_type in ['LSTM', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
+		for current_classifier_type in ['LSTM', 'CNN', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
 			if len(args.types) > 0 and current_classifier_type.lower() not in map(str.lower, args.types):
 				print("Skipping", current_classifier_type)
 				continue
@@ -167,10 +167,10 @@ def search(args):
 					continue
 
 				print(f"Number {i} of {total}")
-				train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch)
+				train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch, intermediate_name=args.intermediate_name)
 				
 				try:
-					if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower().endswith("stop"):
+					if select.select([sys.stdin], [], [], 0)[0] and "stop" in sys.stdin.readline().strip().lower():
 						print("Stopping search. Use the --continue flag to resume search.")
 						return
 				except:
@@ -187,10 +187,10 @@ def search(args):
 				continue
 
 			print(f"Number {i} of {total}")
-			train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch)
+			train_test_config(classifier_type, config, x, genhmm_min_batch=args.genhmm_min_batch, intermediate_name=args.intermediate_name)
 
 			try:
-				if select.select([sys.stdin], [], [], 0)[0] and sys.stdin.readline().strip().lower().endswith("stop"):
+				if select.select([sys.stdin], [], [], 0)[0] and "stop" in sys.stdin.readline().strip().lower():
 					print("Stopping search. Use the --continue flag to resume search.")
 					return
 			except:
@@ -256,7 +256,7 @@ def results(args):
 	all_ids = set(x for _, x in bestRecall.values()).union(x for _, x in bestPrecision.values()).union([bestAvgAcc[1]])
 	for x in all_ids:
 		print(x)
-		print(permutations[x][0])
+		print(permutations[x][0], permutations[x][1])
 		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
 			confusiontable = pickle.load(f)
 		print(confusiontable)
@@ -353,7 +353,8 @@ if __name__ == "__main__":
 
 	subparser.add_argument("-g", "--group", help="Group tested configurations by type", action="store_true")
 	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers", nargs="+", default=[])
-	subparser.add_argument("--genhmm-min-batch", help="Set minimum batch size of the GenHMM", type=int, default=1)
+	subparser.add_argument("--genhmm-min-batch", help="Set minimum batch size of the GenHMM", metavar="SIZE", type=int, default=1)
+	subparser.add_argument("--intermediate-name", help="Name of the intermediate classifier file (default: %(default)s", default="current.classifier")
 
 	group = subparser.add_mutually_exclusive_group()
 	group.add_argument("-j", "--json", help="JSON file with search options (default: <CLASSIFIER>/search.json)", default=None)

@@ -2,11 +2,11 @@ from model import Model
 import numpy as np
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
-from random import sample
 
 # TODO: gör bra val av C och gamma
 # Se https://scikit-learn.org/stable/modules/svm.html#parameters-of-the-rbf-kernel
 class SVM(Model):
+	MULTICLASS = True
 	def __init__(self, config: dict, noise_types: list):
 		self.svm = SVC(
 			**{key: val
@@ -24,7 +24,6 @@ class SVM(Model):
 	def get_noise_types(self):
 		return self.noise_types
 
-	MULTICLASS = True
 	def train(self, train_data, config=None):
 		data = []
 		labels = []

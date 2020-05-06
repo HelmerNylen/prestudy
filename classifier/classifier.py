@@ -162,7 +162,8 @@ def train(args):
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
 	from model_svm import SVM
-	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
+	from model_cnn import CNN
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM, CNN]
 
 	if args.data is None:
 		args.data = ""
@@ -248,7 +249,8 @@ def test(args):
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
 	from model_svm import SVM
-	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
+	from model_cnn import CNN
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM, CNN]
 
 	if args.data is None:
 		args.data = ""
@@ -314,7 +316,8 @@ def ls(args):
 	from model_genhmm import GenHMM
 	from model_lstm import LSTM
 	from model_svm import SVM
-	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM]
+	from model_cnn import CNN
+	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM, CNN]
 
 	if not os.path.exists(args.models):
 		print("Models folder does not exist: " + args.models)
@@ -358,7 +361,7 @@ def test_vad(args):
 			print(f"\tVAD aggressiveness {agg} flags {speech/total:.0%} as speech")
 
 if __name__ == "__main__":
-	supported_types = ["GenHMM", "GMMHMM", "LSTM", "SVM"]
+	supported_types = ["GenHMM", "GMMHMM", "LSTM", "SVM", "CNN"]
 	parser = argparse.ArgumentParser(
 		prog="classifier.py",
 		description="Train or test a classifier. Supported types: " + ", ".join(supported_types)
@@ -373,7 +376,7 @@ if __name__ == "__main__":
 	group.add_argument("--train", help="Path to training data output folder (default: <DATA>/train)", default=None)
 	group.add_argument("--test", help="Path to testing data output folder (default: <DATA>/test)", default=None)
 	group.add_argument("--kaldi", help=f"Path to kaldi root folder (default: {get_kaldi_root()})", default=None)
-	group.add_argument("--gm_hmm", help="Path to gm_hmm root folder (default: $PWD/gm_hmm)", default=os.path.join(os.getcwd(), "gm_hmm"))
+	group.add_argument("--gm_hmm", help="Path to gm_hmm root folder (default: $PWD/gm_hmm). gm_hmm and its dependencies are needed for GMMHMM and GenHMM.", default=os.path.join(os.getcwd(), "gm_hmm"))
 	group.add_argument("--models", help="Path to classifier models save folder (default: $PWD/classifier/models)", default=os.path.join(os.getcwd(), "classifier", "models"))
 
 	subparser = subparsers.add_parser("train", help="Perform training")
@@ -382,7 +385,7 @@ if __name__ == "__main__":
 	subparser.add_argument("-r", "--recompute", help="Ignore saved features and recompute", action="store_true")
 	subparser.add_argument("-c", "--classifiers", help=f"Classes to train. If none are specified, all types are trained. Available: {', '.join(supported_types)}.", metavar="TYPE",
 							nargs="*", choices=list(map(str.lower, supported_types))+[[]], type=str.lower)
-	subparser.add_argument("-o", "--override", help="Override a classifier parameter. PATH takes the form 'classifier.category.parameter'.", nargs=2, metavar=("PATH", "VALUE"), action="append")
+	subparser.add_argument("-o", "--override", help="Override a classifier parameter. PATH takes the form 'classifier.category.parameter'. VALUE is a JSON-parsable object.", nargs=2, metavar=("PATH", "VALUE"), action="append")
 	subparser.add_argument("-s", "--silent", help="Suppress all informational output on stdout (certain output is instead routed to stderr)", action="store_true")
 	
 	out = subparser.add_argument_group("Classifier output")
@@ -414,8 +417,10 @@ if __name__ == "__main__":
 	subparser = subparsers.add_parser("ls", help="List all classifiers in <MODELS>")
 	subparser.set_defaults(func=ls)
 
+	"""
 	subparser = subparsers.add_parser("test-vad", help="Try all combinations of VAD parameters and list statistics")
 	subparser.set_defaults(func=test_vad)
+	"""
 
 	args = parser.parse_args()
 	if args.profile:

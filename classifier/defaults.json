@@ -42,7 +42,8 @@
 			"learning_rate": 0.005,
 			"batch_size": 256,
 			"n_iter": 4,
-			"verbose": false
+			"verbose": true,
+			"force_cpu": false
 		}
 	},
 	"SVM": {
@@ -61,7 +62,22 @@
 		}
 	},
 	"CNN": {
-		"parameters": {},
-		"train": {}
+		"parameters": {
+			"frame_len": 20,
+			"frame_overlap": 5,
+			"channels": [3, 9],
+			"kernel_size": [3, 3],
+			"maxpool_kernel_size": [2, 2],
+			"conv2d_kwargs": {
+				"padding": 2
+			}
+		},
+		"train": {
+			"use_batchnorm": true,
+			"learning_rate": 0.01,
+			"batch_size": 256,
+			"verbose": true,
+			"n_iter": 8
+		}
 	}
 }

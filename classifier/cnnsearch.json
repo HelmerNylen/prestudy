@@ -1,0 +1,22 @@
+{
+	"CNN": {
+		"parameters": {
+			"frame_len": [20, 30],
+			"frame_overlap": [0, 5, 10],
+			"channels": [[3, 9], [3, 6], [2, 4], [3, 7, 11]],
+			"kernel_size": [[3, 3], [4, 4], [4, 3]],
+			"maxpool_kernel_size": [[2, 2], [3, 3]],
+			"conv2d_kwargs": [{
+				"padding": 2
+			}],
+			"fc_hidden_dims": [[], [16], [32]]
+		},
+		"train": {
+			"use_batchnorm": true,
+			"learning_rate": [0.03, 0.01, 0.003],
+			"batch_size": 256,
+			"verbose": true,
+			"n_iter": 20
+		}
+	}
+}

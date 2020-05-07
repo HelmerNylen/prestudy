@@ -3,7 +3,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from model import Model
-from math import ceil
+from math import ceil, floor
 
 class CNN(Model):
 	MULTICLASS = True
@@ -18,6 +18,7 @@ class CNN(Model):
 		self.use_batchnorm = True if "use_batchnorm" not in config["train"] else config["train"]["use_batchnorm"]
 		self.learning_rate = config["train"]["learning_rate"]
 		self.conv2d_kwargs = dict() if "conv2d_kwargs" not in config["parameters"] else config["parameters"]["conv2d_kwargs"]
+		self.fc_hidden_dims = config["parameters"]["fc_hidden_dims"]
 
 		self.cnn = None
 		self.loss = None
@@ -45,7 +46,7 @@ class CNN(Model):
 			raise Exception("CNN already initialized")
 		self.cnn = CNNModule(feat_dim, self.frame_len, len(self.noise_types),
 			self.channels, self.kernel_size, self.maxpool_kernel_size,
-			self.maxpool_stride, self.use_batchnorm, **self.conv2d_kwargs)
+			self.maxpool_stride, self.use_batchnorm, self.fc_hidden_dims, **self.conv2d_kwargs)
 		self.loss = nn.NLLLoss()
 		self.optimizer = torch.optim.Adam(self.cnn.parameters(), lr=self.learning_rate)
 
@@ -128,7 +129,7 @@ class CNN(Model):
 
 class CNNModule(nn.Module):
 	def __init__(self, feat_dim, num_feats, output_dim, channels, kernel_size,
-			pool_kernel_size, pool_stride, batchnorm, **kwargs):
+			pool_kernel_size, pool_stride, batchnorm, fc_hidden_dims, **kwargs):
 		super(CNNModule, self).__init__()
 		
 		channels = (1,) + tuple(channels)
@@ -139,34 +140,19 @@ class CNNModule(nn.Module):
 			modules.append(nn.MaxPool2d(pool_kernel_size, stride=pool_stride))
 			if batchnorm:
 				modules.append(nn.BatchNorm2d(channels[i]))
-		
-		self.conv = nn.Sequential(*modules)
-		
-		pad = (0, 0)
-		if "padding" in kwargs:
-			pad = kwargs["padding"] if type(kwargs["padding"]) in (list, tuple) else (kwargs["padding"],) * 2
-		dil = (1, 1)
-		if "dilation" in kwargs:
-			dil = kwargs["dilation"] if type(kwargs["dilation"]) in (list, tuple) else (kwargs["dilation"],) * 2
-		ker = kernel_size if type(kernel_size) in (list, tuple) else (kernel_size,) * 2
-		stride = (1, 1)
-		if "stride" in kwargs:
-			stride = kwargs["stride"] if type(kwargs["stride"]) in (list, tuple) else (kwargs["stride"],) * 2
-		mp_ker = pool_kernel_size if type(pool_kernel_size) in (list, tuple) else (pool_kernel_size,) * 2
-		mp_stride = pool_stride if type(pool_stride) in (list, tuple) else (pool_stride,) * 2
-		H = feat_dim
-		W = num_feats
-		for c in channels[1:]:
-			# Conv
-			H = ((H + 2 * pad[0] - dil[0] * (ker[0] - 1) - 1) // stride[0]) + 1
-			W = ((W + 2 * pad[1] - dil[1] * (ker[1] - 1) - 1) // stride[1]) + 1
-			# Maxpool
-			H = ((H - mp_ker[0]) // mp_stride[0]) + 1
-			W = ((W - mp_ker[1]) // mp_stride[1]) + 1
 
+		self.conv = nn.Sequential(*modules)
+
+		with torch.no_grad():
+			H, W = self.conv.forward(torch.zeros(1, 1, num_feats, feat_dim)).size()[-2:]
 		self.inner_dim = channels[-1] * H * W
 
-		self.linear = nn.Linear(self.inner_dim, output_dim)
+		fc_hidden_dims = (self.inner_dim,) + tuple(fc_hidden_dims) + (output_dim,)
+		modules = []
+		for i in range(1, len(fc_hidden_dims)):
+			modules.append(nn.Linear(fc_hidden_dims[i-1], fc_hidden_dims[i]))
+			modules.append(nn.ReLU())
+		self.linear = nn.Sequential(*modules)
 		self.logsoftmax = nn.LogSoftmax(dim=1)
 	
 	def forward(self, data):

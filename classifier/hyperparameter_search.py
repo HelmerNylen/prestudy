@@ -34,8 +34,8 @@ class ConfigPermutations:
 	
 	def shuffle(self):
 		shuffle(self.current_shuffle)
-	
-	def __getitem__(self, x):
+
+	def _get_combination(self, x):
 		assert 0 <= x < len(self)
 		x = self.current_shuffle[x]
 		inner_x = x
@@ -47,7 +47,10 @@ class ConfigPermutations:
 				_type = _t
 				break
 
-		combination = list(tuple(product(*(range(l) for l in self.lengths[_type].values())))[x])
+		return _type, list(tuple(product(*(range(l) for l in self.lengths[_type].values())))[x]), inner_x
+
+	def __getitem__(self, x):
+		_type, combination, inner_x = self._get_combination(x)
 		combination_idx = 0
 		config = dict()
 		for category in self.search[_type]:
@@ -59,6 +62,7 @@ class ConfigPermutations:
 				else:
 					config[category][key] = self.search[_type][category][key]
 		return _type, config, inner_x
+
 	def __iter__(self):
 		for x in range(len(self)):
 			yield self[x]
@@ -208,10 +212,14 @@ def results(args):
 
 	files = next(os.walk(args.saveto))[2]
 	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
-	files = files
+
+	if len(args.types) > 0:
+		files = [f for f in files if permutations[int(f)][0].lower() in map(str.lower, args.types)]
 
 	print(f"{len(files)} of {len(permutations)} classifiers in folder")
 	for classifier_type in permutations.types:
+		if classifier_type.lower() not in map(str.lower, args.types):
+			continue
 		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
 
 	bestPrecision = None
@@ -260,6 +268,54 @@ def results(args):
 		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
 			confusiontable = pickle.load(f)
 		print(confusiontable)
+
+def coverage(args):
+	if args.saveto is None:
+		args.saveto = os.path.join(args.classifier, "search")
+	
+	with open(os.path.join(args.saveto, "search.json"), "r") as f:
+		search = json.load(f)
+	permutations = ConfigPermutations(search)
+
+	files = next(os.walk(args.saveto))[2]
+	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
+
+	print(f"{len(permutations)} classifiers are described by {os.path.join(args.saveto, 'search.json')}")
+	print(f"{len(files)} have been successfully tested")
+	files_by_type = dict()
+	for classifier_type in permutations.types:
+		files_by_type[classifier_type] = [f for f in files if permutations[int(f)][0] == classifier_type]
+		print(f"\t{len(files_by_type[classifier_type])} of type {classifier_type} ({len(files_by_type[classifier_type]) / permutations.totallengths[classifier_type]:.2%})")
+
+
+	has_tested = dict()
+	for classifier_type in permutations.types:
+		has_tested[classifier_type] = [(cat_key, [False] * l)
+				for cat_key, l in permutations.lengths[classifier_type].items()]
+		for fn in files_by_type[classifier_type]:
+			_, combination, _ = permutations._get_combination(int(fn))
+			for combination_idx, idx in enumerate(combination):
+				has_tested[classifier_type][combination_idx][1][idx] = True
+
+	
+	untested = sum(not tested for ct in has_tested for _, possible in has_tested[ct] for tested in possible)
+	if untested != 0:
+		print(f"{untested} untested or invalid parameter setting{'s' if untested != 1 else ''}:")
+		for classifier_type in permutations.types:
+			untested_current = [(cat_key, idx)
+					for cat_key, possible in has_tested[classifier_type]
+						for idx, tested in enumerate(possible)
+							if not tested]
+			if len(untested_current) != 0:
+				print(f"\t{classifier_type} ({len(untested_current)} settings)")
+				for (category, key), idx in untested_current:
+					print(
+						"\t\t", classifier_type, ".", category, ".", key, " = ",
+						json.dumps(permutations.search[classifier_type][category][key][idx]),
+						sep=""
+					)
+	else:
+		print("All parameter settings have been successfully tested at least once")
 
 def repair(args):
 	sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
@@ -362,6 +418,11 @@ if __name__ == "__main__":
 
 	subparser = subparsers.add_parser("results", help="Show the results of a search")
 	subparser.set_defaults(func=results)
+
+	subparser.add_argument("-t", "--types", help="Only allow certain types of classifiers", nargs="+", default=[])
+
+	subparser = subparsers.add_parser("coverage", help="Show statistics of a search")
+	subparser.set_defaults(func=coverage)
 
 	subparser = subparsers.add_parser("repair", help="Repair a search where the relative configuration indexes have been used as filenames rather than the global ones")
 	subparser.set_defaults(func=repair)

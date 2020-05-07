@@ -202,6 +202,24 @@ def search(args):
 			
 	print("All done")
 
+def precision(confusion_table: ConfusionTable, label: str):
+	positives = sum(confusion_table[l, label] for l in confusion_table.true_labels)
+	if positives == 0:
+		return 0
+	else:
+		return confusion_table[label, label] / positives
+
+def recall(confusion_table: ConfusionTable, label: str):
+	return confusion_table[label, label] / confusion_table[label, ...]
+
+def F1_score(confusion_table: ConfusionTable, label: str):
+	_precision = precision(confusion_table, label)
+	_recall = recall(confusion_table, label)
+	if _precision == 0 and _recall == 0:
+		return 0
+	else:
+		return 2 * _precision * _recall / (_precision + _recall)
+
 def results(args):
 	if args.saveto is None:
 		args.saveto = os.path.join(args.classifier, "search")
@@ -222,52 +240,43 @@ def results(args):
 			continue
 		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
 
-	bestPrecision = None
-	bestRecall = None
-	bestAvgAcc = None
+	metrics = {"Precision": precision, "Recall": recall, "F1-score": F1_score}
+	bestPerLabel = None
+	bestAvg = None
 	for fn in files:
 		x = int(fn)
 		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
 			confusiontable = pickle.load(f)
-		if bestPrecision is None:
-			bestPrecision = {label: (-1, -1) for label in confusiontable.true_labels}
-			bestRecall = {label: (-1, -1) for label in confusiontable.true_labels}
-			bestAvgAcc = (-1, -1)
+		if bestPerLabel is None:
+			bestPerLabel = {metric: {label: (-1, -1) for label in confusiontable.true_labels} for metric in metrics}
+			bestAvg = {metric: (-1, -1) for metric in metrics}
 
-		for label in confusiontable.true_labels:
-			positives = sum(confusiontable[l, label] for l in confusiontable.true_labels)
-			if positives == 0:
-				precision = 0
-			else:
-				precision = confusiontable[label, label] / positives
-			recall = confusiontable[label, label] / confusiontable[label, ...]
-			if precision > bestPrecision[label][0]:
-				bestPrecision[label] = (precision, x)
-			if recall > bestRecall[label][0]:
-				bestRecall[label] = (recall, x)
-		avgAcc = sum(confusiontable[label, label] / confusiontable[label, ...] for label in confusiontable.true_labels) / len(confusiontable.true_labels)
-		if avgAcc > bestAvgAcc[0]:
-			bestAvgAcc = (avgAcc, x)
-
+		for metric in metrics:
+			measures = []
+			for label in confusiontable.true_labels:
+				measures.append(metrics[metric](confusiontable, label))
+				if measures[-1] > bestPerLabel[metric][label][0]:
+					bestPerLabel[metric][label] = (measures[-1], x)
+			N = sum(confusiontable[label, ...] for label in confusiontable.true_labels)
+			avg = sum(measure * confusiontable[label, ...] / N for measure, label in zip(measures, confusiontable.true_labels))
+			if avg > bestAvg[metric][0]:
+				bestAvg[metric] = (avg, x)
 	
-	print("-- Recall --")
-	for label in bestRecall:
-		print(f"Label: {label}, best: {bestRecall[label][0]:.2%} by model {bestRecall[label][1]}")
-	print()
-	print("-- Precision --")
-	for label in bestPrecision:
-		print(f"Label: {label}, best: {bestPrecision[label][0]:.2%} by model {bestPrecision[label][1]}")
-	print()
-	print(f"Best average accuracy: {bestAvgAcc[0]:.2%} by model {bestAvgAcc[1]}")
-	print()
-
-	all_ids = set(x for _, x in bestRecall.values()).union(x for _, x in bestPrecision.values()).union([bestAvgAcc[1]])
+	all_ids = set(x for metric in metrics for _, x in bestPerLabel[metric].values())\
+			.union(x for _, x in bestAvg.values())
 	for x in all_ids:
 		print(x)
 		print(permutations[x][0], permutations[x][1])
 		with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
 			confusiontable = pickle.load(f)
 		print(confusiontable)
+
+	for metric in metrics:
+		print("--", metric, "--")
+		for label in bestPerLabel[metric]:
+			print(f"Label: {label}, best: {bestPerLabel[metric][label][0]:.2%} by model {bestPerLabel[metric][label][1]}")
+		print(f"Best average: {bestAvg[metric][0]:.2%} by model {bestAvg[metric][1]}")
+		print()
 
 def coverage(args):
 	if args.saveto is None:

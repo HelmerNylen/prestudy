@@ -176,7 +176,8 @@ def train(args):
 	if len(args.write) == 1:
 		args.write = args.write[0]
 	if isinstance(args.write, str):
-		if "<type>" not in args.write.lower() and len(args.classifiers) != 1:
+		if "<type>" not in args.write.lower() and len(args.classifiers) != 1 \
+					and (args.read is not None and len(args.read) > 1 and "type" not in args.read[0].lower()):
 			print("Invalid write specifier")
 			sys.exit(1)
 	elif len(args.write) != 0 and len(args.write) != (len(args.classifiers) or len(supported_classifiers)):
@@ -185,6 +186,30 @@ def train(args):
 
 	if args.config_stdin:
 		config = json.loads(input())
+
+	elif args.read is not None:
+		config = dict()
+		if len(args.read) == 0:
+			args.read = args.write
+		if len(args.read) == 1:
+			args.read = args.read[0]
+		if isinstance(args.read, str):
+			if "<type>" in args.read.lower():
+				args.read = [re.sub("<type>", c.__name__, args.read, flags=re.IGNORECASE)
+					for c in supported_classifiers
+						if len(args.classifiers) == 0 or c.__name__.lower() in args.classifiers]
+			else:
+				args.read = [args.read]
+		classifiers = []
+		for fn in args.read:
+			classifiers.append(Classifier.from_file(fn, folder=args.models))
+			if classifiers[-1].model_type.__name__ in config:
+				raise ValueError(f"Can only train one instance of each type of classifier at once (duplicate {classifiers[-1].model_type.__name__})")
+			if len(args.classifiers) != 0 and classifiers[-1].__name__.lower() not in args.classifiers:
+				raise ValueError(f"The classifier in {fn} is a {classifiers[-1].model_type.__name__}, which is disallowed by --classifiers ({args.classifiers})")
+			
+			config[classifiers[-1].model_type.__name__] = classifiers[-1].config
+
 	else:
 		with open(args.config, "r") as f:
 			config = json.load(f)
@@ -208,27 +233,34 @@ def train(args):
 	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
 		feats = extract_mfcc(args.train, args.recompute)
 
-	classifiers = []
-	for supported_classifier in supported_classifiers:
-		if len(args.classifiers) == 0 or supported_classifier.__name__.lower() in args.classifiers:
-			classifiers.append(Classifier(feats.keys(), supported_classifier, config, silent=args.silent))
+	if args.read is None:
+		classifiers = []
+		for supported_classifier in supported_classifiers:
+			if len(args.classifiers) == 0 or supported_classifier.__name__.lower() in args.classifiers:
+				classifiers.append(Classifier(feats.keys(), supported_classifier, config, silent=args.silent))
 
-	for i, classifier in enumerate(classifiers):
-		classifier.train(feats, silent=args.silent, models_folder=args.models)
-		if isinstance(args.write, str):
-			classifier.save_to_file(
-				filename=re.sub(
-					"<type>",
-					classifier.model_type.__name__,
-					args.write,
-					flags=re.IGNORECASE), 
-				folder=args.models
-			)
-		elif len(args.write) == len(classifiers):
-			classifier.save_to_file(
-				filename=args.write[i], 
-				folder=args.models
-			)
+	for epoch in range(1, args.epochs + 1):
+		for i, classifier in enumerate(classifiers):
+			if classifier.model_type == SVM and epoch > 1:
+				continue
+
+			classifier.train(feats, silent=args.silent, models_folder=args.models)
+			if isinstance(args.write, str):
+				classifier.save_to_file(
+					filename=re.sub(
+						"<type>",
+						classifier.model_type.__name__,
+						args.write,
+						flags=re.IGNORECASE), 
+					folder=args.models
+				)
+			elif len(args.write) == len(classifiers):
+				classifier.save_to_file(
+					filename=args.write[i], 
+					folder=args.models
+				)
+		if not args.silent and args.epochs != 1:
+			print("Epoch", epoch)
 
 	if args.write_stdout:
 		sys.stdout.buffer.write(pickle.dumps(classifiers))
@@ -384,9 +416,10 @@ if __name__ == "__main__":
 
 	subparser.add_argument("-r", "--recompute", help="Ignore saved features and recompute", action="store_true")
 	subparser.add_argument("-c", "--classifiers", help=f"Classes to train. If none are specified, all types are trained. Available: {', '.join(supported_types)}.", metavar="TYPE",
-							nargs="*", choices=list(map(str.lower, supported_types))+[[]], type=str.lower)
+							nargs="*", choices=list(map(str.lower, supported_types))+[[]], type=str.lower, default=[])
 	subparser.add_argument("-o", "--override", help="Override a classifier parameter. PATH takes the form 'classifier.category.parameter'. VALUE is a JSON-parsable object.", nargs=2, metavar=("PATH", "VALUE"), action="append")
 	subparser.add_argument("-s", "--silent", help="Suppress all informational output on stdout (certain output is instead routed to stderr)", action="store_true")
+	subparser.add_argument("-e", "--epochs", help="Number of epochs to run. Repeatedly trains each classifier <TYPE>.train.n_iter times and may save the intermediate classifiers (see --write). No effect on SVM training. Default: %(default)d", metavar="NUM_EPOCHS", type=int, default=1)
 	
 	out = subparser.add_argument_group("Classifier output")
 	out.add_argument("-w", "--write", help="Files relative to <MODELS> to save classifier(s) to. Must be 0, 1 (containing <TYPE>), or same as number of classes. Default: %(default)s", metavar="FILE", nargs="*", default="latest_<TYPE>.classifier")
@@ -394,6 +427,8 @@ if __name__ == "__main__":
 
 	configs = subparser.add_mutually_exclusive_group()
 	configs.add_argument("--config", help="Path to classifier config file (default: $PWD/classifier/defaults.json)", default=os.path.join(os.getcwd(), "classifier", "defaults.json"))
+	configs.add_argument("--read", help="Continue training existing classifiers for another epoch. Note that learning rates and iteration counts can be overridden by -o.\n"
+		+ "Specify files relative to <MODELS> to read classifier(s) from. Must be 0, 1 (containing <TYPE>), or same as number of classes. If 0 files are provided the value of --write is used.", metavar="FILE", nargs="*", default=None)
 	# Not working
 	configs.add_argument("--config-stdin", help="Read config from stdin", action="store_true")
 

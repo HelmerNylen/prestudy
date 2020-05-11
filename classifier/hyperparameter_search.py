@@ -6,6 +6,7 @@ import sys
 import select
 import subprocess
 import pickle
+import re
 import numpy as np
 from time import time
 from itertools import product
@@ -90,7 +91,7 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate
 			encoding=sys.getdefaultencoding(),
 			stderr=subprocess.PIPE, stdout=subprocess.PIPE
 		)
-		while result.returncode and classifier_type.lower() == "genhmm" and int(config["train"]["batch_size"]/2) >= 1:
+		while result.returncode and classifier_type.lower() == "genhmm" and int(config["train"]["batch_size"]/2) >= genhmm_min_batch:
 			# Try decreasing batch size and try again
 			config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
 			print(f"Decreasing batch size to {config['train']['batch_size']} and trying again")
@@ -151,6 +152,24 @@ def search(args):
 	
 	print("Type 'stop' and press enter to stop the search after the next completed config")
 	print()
+
+	# Prioritized configs
+	if len(args.prioritize) > 0:
+		print("Testing prioritized configs")
+		for i, x in enumerate(args.prioritize):
+			if getattr(args, "continue") and os.path.exists(os.path.join(args.saveto, str(x) + ".classifier")):
+				print(f"Overwriting classifier {x}")
+
+			print(f"Number {i} of {len(args.prioritize)}")
+			train_test_config(*permutations[x], genhmm_min_batch=args.genhmm_min_batch, intermediate_name=args.intermediate_name)
+			
+			try:
+				if select.select([sys.stdin], [], [], 0)[0] and "stop" in sys.stdin.readline().strip().lower():
+					print("Stopping search. Use the --continue flag to resume search.")
+					return
+			except:
+				pass
+
 
 	permutations.shuffle()
 	i = 0
@@ -220,6 +239,15 @@ def F1_score(confusion_table: ConfusionTable, label: str):
 	else:
 		return 2 * _precision * _recall / (_precision + _recall)
 
+def average(measure, confusion_table: ConfusionTable, equal_weights=False):
+	if equal_weights:
+		return sum(measure(confusion_table, label) for label in confusion_table.true_labels)\
+					/ len(confusion_table.true_labels)
+	else:
+		return sum(measure(confusion_table, label) * confusion_table[label, ...] for label in confusion_table.true_labels)\
+					/ sum(confusion_table[label, ...] for label in confusion_table.true_labels)
+
+# TODO: parsea args.types ordentligt istället för att mappa str.lower flera gånger och hålla på
 def results(args):
 	if args.saveto is None:
 		args.saveto = os.path.join(args.classifier, "search")
@@ -236,7 +264,7 @@ def results(args):
 
 	print(f"{len(files)} of {len(permutations)} classifiers in folder")
 	for classifier_type in permutations.types:
-		if classifier_type.lower() not in map(str.lower, args.types):
+		if len(args.types) and classifier_type.lower() not in map(str.lower, args.types):
 			continue
 		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
 
@@ -277,6 +305,50 @@ def results(args):
 			print(f"Label: {label}, best: {bestPerLabel[metric][label][0]:.2%} by model {bestPerLabel[metric][label][1]}")
 		print(f"Best average: {bestAvg[metric][0]:.2%} by model {bestAvg[metric][1]}")
 		print()
+	
+	# Kan göras mycket effektivare
+	if args.optimal:
+		print("Estimated optimal settings: ")
+		for classifier_type in permutations.types:
+			if len(args.types) and classifier_type.lower() not in map(str.lower, args.types):
+				continue
+			print(classifier_type)
+			optimal_combination = []
+			for combination_idx, ((category, key), l) in enumerate(permutations.lengths[classifier_type].items()):
+				avgs = [0] * l
+				for value in range(l):
+					total = 0
+					N = 0
+					for x in range(len(permutations)):
+						c_t, combination, _ = permutations._get_combination(x)
+						if c_t != classifier_type or combination[combination_idx] != value:
+							continue
+						if not os.path.exists(os.path.join(args.saveto, str(x) + ".confusiontable")):
+							continue
+						with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
+							confusiontable = pickle.load(f)
+						total += average(F1_score, confusiontable)
+						N += 1
+					if N > 0:
+						avgs[value] = total / N
+				print("\t" + category, key, sep=".", end=" = ")
+				print(json.dumps(permutations.search[classifier_type][category][key][np.argmax(avgs)]))
+				optimal_combination.append(np.argmax(avgs))
+			print()
+			for x in range(len(permutations)):
+				c_t, combination, _ = permutations._get_combination(x)
+				if c_t == classifier_type and combination == optimal_combination:
+					print("\tIndex of optimal combination:", x)
+					has_tested = os.path.exists(os.path.join(args.saveto, str(x) + ".confusiontable"))
+					print("\tHas been tested:", "yes" if has_tested else "no")
+					if has_tested:
+						if x not in all_ids:
+							with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
+								print(pickle.load(f))
+						else:
+							print("See above for confusion table")
+					break
+			print()
 
 def coverage(args):
 	if args.saveto is None:
@@ -294,7 +366,10 @@ def coverage(args):
 	files_by_type = dict()
 	for classifier_type in permutations.types:
 		files_by_type[classifier_type] = [f for f in files if permutations[int(f)][0] == classifier_type]
-		print(f"\t{len(files_by_type[classifier_type])} of type {classifier_type} ({len(files_by_type[classifier_type]) / permutations.totallengths[classifier_type]:.2%})")
+		print(
+			f"\t{len(files_by_type[classifier_type])}/{permutations.totallengths[classifier_type]} of type {classifier_type}",
+			f"({len(files_by_type[classifier_type]) / permutations.totallengths[classifier_type]:.2%})"
+		)
 
 
 	has_tested = dict()
@@ -325,6 +400,135 @@ def coverage(args):
 					)
 	else:
 		print("All parameter settings have been successfully tested at least once")
+
+def epochs(args):
+	if args.tolerance < 0:
+		print("Tolerance must be >= 0")
+		sys.exit(1)
+
+	if args.saveto is None:
+		args.saveto = os.path.join(args.classifier, "search")
+	if args.start_from_config is None and args.start_from_files is None:
+		args.start_from_config = os.path.join(args.classifier, "defaults.json")
+	
+	if args.start_from_config is not None:
+		with open(args.start_from_config, "r") as f:
+			config = json.load(f)
+			configs = [{classifier_type: config[classifier_type]}
+				for classifier_type in config
+					if len(args.types) == 0 or classifier_type.lower() in map(str.lower, args.types)]
+					
+		if len(args.files) == 1 and args.files[0] == "*":
+			args.files = ["latest_<TYPE>.classifier"]
+		if len(args.files) == 1 and "<type>" in args.files[0].lower():
+			# TODO: Move the latest_<TYPE>.classifier replacements and similar to a utility file instead of copypasting
+			args.files = [re.sub("<type>", classifier_type, args.files[0], flags=re.IGNORECASE)
+				for config in configs for classifier_type in config]
+
+	else:
+		# This is ugly and should be done in a better way
+		sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
+		from classifier import Classifier
+		globals()["Classifier"] = Classifier
+
+		configs = []
+		keep_file = [False] * len(args.start_from_files)
+		for i, fn in enumerate(args.start_from_files):
+			c = Classifier.from_file(fn, folder=args.saveto)
+			if len(args.types) == 0 or c.model_type.__name__.lower() in map(str.lower, args.types):
+				configs.append({c.model_type.__name__: c.config})
+				keep_file[i] = True
+
+		if len(args.files) == len(args.start_from_files):
+			args.files = [fn for fn, keep in zip(args.files, keep_file) if keep]
+		args.start_from_files = [fn for fn, keep in zip(args.start_from_files, keep_file) if keep]
+		
+		if len(args.files) == 1 and args.files[0] == "*":
+			args.files = args.start_from_files
+
+	if len(args.files) > 0 and len(args.files) != len(configs):
+		raise ValueError(f"Invalid number of output files")
+
+	with NamedTemporaryFile() as intermediateFile:
+		confusion_tables = [[] for _ in range(len(configs))]
+		for i, config in enumerate(configs):
+			for epoch in range(1, args.max_epochs + 1):
+				with NamedTemporaryFile("w") as configFile:
+					with open(configFile.name, "w") as f:
+						json.dump(config, f)
+
+					# Train
+					if epoch == 1:
+						command = [
+							os.path.join(args.classifier, "classifier.py"),
+							"--models", args.saveto,
+							"train",
+							"-s",
+							"-c", next(iter(config)).lower(),
+							"--config", configFile.name,
+							"-w", intermediateFile.name if len(args.files) == 0 else args.files[i]
+						]
+					else:
+						command = [
+							os.path.join(args.classifier, "classifier.py"),
+							"--models", args.saveto,
+							"train",
+							"-s",
+							"--read",
+							"-w", intermediateFile.name if len(args.files) == 0 else args.files[i]
+						]
+					
+					print(*command)
+					result = subprocess.run(
+						command,
+						encoding=sys.getdefaultencoding(),
+						stderr=subprocess.PIPE, stdout=subprocess.PIPE
+					)
+					if result.returncode:
+						print("Could not train", json.dumps(config))
+						print("Error:", result.stderr)
+						sys.exit(1)
+
+				# Test
+				command = [
+					os.path.join(args.classifier, "classifier.py"),
+					"--models", args.saveto,
+					"test",
+					"--write-stdout",
+					intermediateFile.name if len(args.files) == 0 else args.files[i]
+				]
+				print(*command)
+				result = subprocess.run(
+					command,
+					stdout=subprocess.PIPE
+				)
+				if result.returncode:
+					print("Could not test", json.dumps(config))
+					sys.exit(1)
+				confusion_table, = pickle.loads(result.stdout)
+				confusion_tables[i].append(confusion_table)
+				print(f"Epoch {epoch}. F1-score: {average(F1_score, confusion_table):.2%}", end="")
+				
+				if len(confusion_tables[i]) >= 2:
+					diff = average(F1_score, confusion_tables[i][-1]) - average(F1_score, confusion_tables[i][-2])
+					print(f", increase: {diff:.2%}")
+					if diff < args.tolerance:
+						print("Minimum increase reached")
+						break
+				else:
+					print()
+
+				if next(iter(config)).lower() == "svm":
+					print("SVM cannot train for multiple epochs")
+					break
+			else:
+				print("Maximum number of epochs reached")
+
+	print()
+	print("-- Epochs needed --")
+	for i, config in enumerate(configs):
+		print(len(confusion_tables[i]), "for classifier ", end="")
+		print(json.dumps(config))
 
 def repair(args):
 	sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
@@ -420,6 +624,7 @@ if __name__ == "__main__":
 	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers", nargs="+", default=[])
 	subparser.add_argument("--genhmm-min-batch", help="Set minimum batch size of the GenHMM", metavar="SIZE", type=int, default=1)
 	subparser.add_argument("--intermediate-name", help="Name of the intermediate classifier file (default: %(default)s", default="current.classifier")
+	subparser.add_argument("--prioritize", help="Push certain configuration IDs to the front of the search queue", metavar="ID", nargs="+", default=[], type=int)
 
 	group = subparser.add_mutually_exclusive_group()
 	group.add_argument("-j", "--json", help="JSON file with search options (default: <CLASSIFIER>/search.json)", default=None)
@@ -429,9 +634,25 @@ if __name__ == "__main__":
 	subparser.set_defaults(func=results)
 
 	subparser.add_argument("-t", "--types", help="Only allow certain types of classifiers", nargs="+", default=[])
+	subparser.add_argument("-o", "--optimal", help="Estimate optimal parameters", action="store_true")
 
 	subparser = subparsers.add_parser("coverage", help="Show statistics of a search")
 	subparser.set_defaults(func=coverage)
+
+	subparser = subparsers.add_parser("epochs", help="Train a set of models until test score converges")
+	subparser.set_defaults(func=epochs)
+
+	group = subparser.add_mutually_exclusive_group()
+	group.add_argument("--start-from-config", help="Start training from config file. Specify path to classifier config file (default: <CLASSIFIER>/defaults.json)", metavar="CONFIG", default=None)
+	group.add_argument("--start-from-files", help="Start training based on preexisting classifiers. Copies configs from the specified classifiers (note that it does not continue training existing classifiers). Paths are relative to <SAVETO>.", metavar="FILE", nargs="+", default=None)
+
+	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers", nargs="+", default=[])
+	subparser.add_argument("files", help="Paths to save intermediate and resulting classifiers to, relative to <SAVETO>. If not specified, do not save classifiers.\n"
+		+ "If --start-from-config is set (default), provide 0, 1 (containing <TYPE>) or as many as specified in config filtered by --types.\n"
+		+ "If --start-from-files is set, provide 0 or as many as the number of files specified with --start-from-files filtered by --types.\n"
+		+ "The wildcard argument '*' will use 'latest_<TYPE>.classifier' if --start-from-config is set, and overwrite the provided files if --start-from-files is set.", metavar="FILE", nargs="*")
+	subparser.add_argument("--tolerance", help="Threshold for difference in F1-score. Stops training when this is reached. Default: %(default)f", metavar="TOL", type=float, default=1e-3)
+	subparser.add_argument("--max-epochs", help="Maximum number of epochs to train a classifier (default: %(default)d). Always 1 for SVMs.", type=int, default=1000)
 
 	subparser = subparsers.add_parser("repair", help="Repair a search where the relative configuration indexes have been used as filenames rather than the global ones")
 	subparser.set_defaults(func=repair)

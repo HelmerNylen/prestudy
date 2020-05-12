@@ -1,16 +1,18 @@
-# Project-specific
+# -- Project-specific --
 .vscode/
 kaldi
 matlab
 gm_hmm
 classifier/models/*
 classifier/*search/*
-data/audio-degradation-toolbox/
-data/matlab-audio-degradation-toolbox/
+data/adt/
 data/timit/*
 data/noise/*
 data/train/*
 data/test/*
+
+# Deleted files
+data/__old_create_sample.py
 
 # -- GitHub Python default --
 # Byte-compiled / optimized / DLL files

@@ -32,7 +32,7 @@ assert(length(speech_files) == size(degradations, 1) ...
 [N, M] = size(degradations);
 
 if nargin < 5
-    adt_root = "ADT/AudioDegradationToolbox";
+    adt_root = "adt/AudioDegradationToolbox";
 end
 addpath(adt_root + "/degradationUnits");
 addpath(adt_root + "/support");
@@ -54,6 +54,15 @@ parfor i = 1:N
             continue
         end
         switch funcname
+            case "pad"
+                if isfield(params, 'before')==0
+                    params.before = 0;
+                end
+                if isfield(params, 'after')==0
+                    params.after = 0;
+                end
+                func = @(aud, fs, ~, par) [zeros(fs * par.before, size(aud, 2)); aud; zeros(fs * par.after, size(aud, 2))];
+
             case "addSound"
                 if isfield(params, 'addSoundFile')
                     if isfield(params, 'addSoundFileStart') ...
@@ -68,8 +77,13 @@ parfor i = 1:N
                         [params.addSound, params.addSoundSamplingFreq] = ...
                             mem_audioread(params.addSoundFile);
                         len = size(f_audio, 1);
-                        offset = randi(size(params.addSound, 1) - len + 1);
-                        params.addSound = params.addSound(offset:offset+len-1, :);
+                        if len < size(params.addSound, 1)
+                            offset = randi(max(1, size(params.addSound, 1) - len + 1));
+                            params.addSound = params.addSound(offset:offset+len-1, :);
+                        elseif len > size(params.addSound, 1)
+                            offset = randi(size(params.addSound(1)));
+                            params.addSound = circshift(params.addSound, -offset);
+                        end
                     else
                         [params.addSound, params.addSoundSamplingFreq] = ...
                             mem_audioread(params.addSoundFile);
@@ -127,7 +141,7 @@ parfor i = 1:N
                 continue
                 
             case "normalize"
-                func = @adthelper_normalizeAudio
+                func = @adthelper_normalizeAudio;
                 
             case ""
                 continue

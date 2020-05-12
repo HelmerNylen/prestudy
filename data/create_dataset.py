@@ -1,11 +1,45 @@
 #!/usr/bin/env python3
 import os
+import sys
 import subprocess
 import argparse
 import math
 from time import time
 
+def _noise_files(data_folder, rel_noise_folder, keep=[".wav"]):
+	noise_folder = os.path.join(data_folder, rel_noise_folder)
+	walk = os.walk(noise_folder, followlinks=True)
+	# Skip .WAV (uppercase) files as these are unprocessed timit sphere files (i.e. don't use os.path.splitext(fn)[-1].lower())
+	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1] in keep])
+			for dp, dn, filenames in walk)
+	walk = ((os.path.relpath(dirpath, noise_folder), (dirpath, filenames))
+			for dirpath, dirnames, filenames in walk
+			if dirpath != noise_folder and len(filenames) > 0)
+	return walk
+
+def _speech_files(data_folder, rel_speech_folder, keep=[".wav"]):
+	speech_folder = os.path.join(data_folder, rel_speech_folder)
+	walk = os.walk(speech_folder, followlinks=True)
+	# Skip .WAV (uppercase) files as these are unprocessed timit sphere files (i.e. don't use os.path.splitext(fn)[-1].lower())
+	walk = ((dp, dn, [fn for fn in filenames if os.path.splitext(fn)[-1] in keep])
+			for dp, dn, filenames in walk)
+	walk = ((dirpath, filenames)
+			for dirpath, dirnames, filenames in walk
+			if len(filenames) > 0)
+	return walk
+
+def read_noise(data_folder, rel_noise_folder):
+	noise = dict(_noise_files(data_folder, rel_noise_folder))
+	n_noisefiles = sum(len(noise[noisetype][1]) for noisetype in noise)
+	return noise, n_noisefiles
+
+def read_speech(data_folder, rel_speech_folder):
+	speech = list(_speech_files(data_folder, rel_speech_folder))
+	n_speechfiles = sum(len(f) for d, f in speech)
+	return speech, n_speechfiles
+
 def _output_dirs(train: str, test: str, move: bool):
+	"""Prepares output directories and moves the existing files to a new subdirectory."""
 	for folder in [train, test]:
 		if os.path.exists(folder):
 			files = next(os.walk(folder))[2]
@@ -28,6 +62,7 @@ def _output_dirs(train: str, test: str, move: bool):
 			print(f"Created {folder}")
 
 def _get_available_filename(folder: str, label: str, ext: str, startind=0, pad=3) -> str:
+	"""Returns a free filename by increasing an appended number."""
 	ind = startind
 	path = os.path.join(folder, label + str(ind).rjust(pad, "0") + "." + ext)
 	while os.path.exists(path):
@@ -35,17 +70,32 @@ def _get_available_filename(folder: str, label: str, ext: str, startind=0, pad=3
 		path = os.path.join(folder, label + str(ind).rjust(pad, "0") + "." + ext)
 	return path
 
+def _get_available_filenames(folder: str, labels: list, ext: str, startind=0, pad=3) -> list:
+	"""Returns multiple free filenames by increasing an appended number."""
+	inds = dict()
+	paths = []
+	path = None
+	for label in labels:
+		while path is None or os.path.exists(path):
+			if label not in inds:
+				inds[label] = startind
+			path = os.path.join(folder, label + str(inds[label]).rjust(pad, "0") + "." + ext)
+			inds[label] += 1
+		paths.append(path)
+		path = None
+	return paths
+
 def create(args):
-	# Matlab must be imported before random (and thus any module which depends on random)
-	if args.use_matlab:
-		import matlab.engine
+	# Matlab must be loaded before any module which depends on random
+	print("Importing Matlab ...", end="", flush=True)
+	import matlab.engine
+	print(" Done")
+
 	import random
-	from create_sample import (read_noise,
-		read_speech,
-		get_noise_types,
-		apply_noise,
-		load_audio,
-		pad)
+	from degradations import get_degradations, setup_matlab_degradations
+
+	# Begin starting Matlab asynchronously
+	m_eng = matlab.engine.start_matlab(background=True)
 
 	# Find all source sound files
 	noise, n_noisefiles = read_noise(args.data, args.noise)
@@ -53,20 +103,28 @@ def create(args):
 	
 	if n_noisefiles == 0:
 		print("No noise files found")
-		return
+		sys.exit(1)
 	if n_speechfiles == 0:
 		print("No speech files found")
-		return
+		sys.exit(1)
 
-	# Parse and verify noise classes
-	if len(args.classes) == 0 or "all" in args.classes:
-		args.classes = list(filter(lambda c: c != "all", set(args.classes + get_noise_types(noise))))
+	# Parse and verify degradation classes
+	available_classes = [d for d in get_degradations(noise) if d not in ("pad",)]
+	if len(args.classes) == 0 or args.classes == ["all"]:
+		args.classes = map(str, available_classes)
+	tmp = []
 	for c in args.classes:
-		if c not in get_noise_types(noise):
-			print(f"Unknown noise class \"{c}\"")
-			print("Available:", ", ".join(noise.keys()))
-			return
-	args.classes.append(None) # None represents no noise/silence
+		try:
+			tmp.append(available_classes[available_classes.index(None if c.lower() == "none" else c.lower())])
+		except ValueError:
+			print(f"Unknown degradation class \"{c}\"")
+			print("Available:", ", ".join(available_classes))
+			print()
+			print("(Stopping Matlab ...", end="", flush=True)
+			m_eng.cancel()
+			print(" Done)")
+			sys.exit(1)
+	args.classes = tmp
 	n_classes = len(args.classes)
 
 	# Verify partition
@@ -80,7 +138,7 @@ def create(args):
 		args.test = int(args.test)
 	if args.train < 0 or args.test < 0 or args.train + args.test > n_speechfiles:
 		print(f"Invalid partition of files: {args.train} train, {args.test} test, {args.train + args.test} total")
-		return
+		sys.exit(1)
 	print(f"Speech: {args.train} training files and {args.test} testing files")
 
 	# Make sure output directories exist and optionally are clean
@@ -118,65 +176,61 @@ def create(args):
 	labels_test = labels_test + ([n_classes - 1] * (len(speech_test) - len(labels_test)))
 	random.shuffle(labels_test)
 
-	# Optionally, start matlab
-	matlab_engine = None
-	if args.use_matlab:
-		print("Starting Matlab ...", end="", flush=True)
-		matlab_engine = matlab.engine.start_matlab()
-		if len(args.data) > 0:
-			matlab_engine.cd(args.data)
-		if args.adt is None:
-			args.adt = os.path.join(args.data, "matlab-audio-degradation-toolbox")
-		matlab_engine.addpath(args.adt)
-		matlab_engine.addpath(os.path.join(args.adt, "AudioDegradationToolbox"))
-		matlab_engine.addpath(os.path.join(args.adt, "AudioDegradationToolbox", "degradationUnits"))
-		print(" Done")
+	# Setup Matlab
+	print("Setting up Matlab ...", end="", flush=True)
+	m_eng = m_eng.result()
+	if len(args.data) > 0:
+		m_eng.cd(args.data, nargout=0)
+	if args.adt is None:
+		args.adt = os.path.join(args.data, "matlab-audio-degradation-toolbox")
+	args.adt = os.path.join(args.adt, "AudioDegradationToolbox")
+	print(" Done")
 
 	# Create datasets
 	for t, speech_t, labels_t, noise_t, output_t in [
 		["train", speech_train, labels_train, noise_train, args.output_train],
 		["test", speech_test, labels_test, noise_test, args.output_test]
 	]:
-		print(f"Creating {t}ing data ", end="", flush=True)
+		print(f"Creating {t}ing data")
 
-		noise_cache = None if args.no_cache else dict()
-		for i in range(len(speech_t)):
-			# Load speech file
-			audio = load_audio(speech_t[i], matlab_engine)
-			# Pad speech with silence
-			if args.pad is not None:
-				audio = pad(audio, args.pad, args.pad, matlab_engine)
-			# Apply noise to speech
-			audio = apply_noise(
-				audio,
-				args.classes[labels_t[i]],
-				noise_t,
-				args,
-				noise_cache,
-				matlab_engine
-			)
-			# Save result to output folder
-			filename = _get_available_filename(
-				output_t,
-				(args.classes[labels_t[i]] or "none") + "_",
-				"wav",
-				1,
-				math.ceil(math.log10(len(speech_t) / n_classes))
-			)
-			if args.use_matlab:
-				matlab_engine.audiowrite(os.path.abspath(filename), audio.samples, audio.sample_rate, nargout=0)
-			else:
-				audio.export(filename)
+		print("Setting up Matlab arguments")
+		degradations = [args.classes[label] for label in labels_t]
+		if args.pad is not None:
+			degradations = [["pad", degradation] for degradation in degradations]
+		setup_matlab_degradations(noise_t, speech_t, degradations, m_eng, args, "degradations")
 
-			if i % (len(speech_t) // 10 or 1) == 0:
-				print(".", end="", flush=True)
-		print(" Done", flush=True)
+		m_eng.workspace["speech_files"] = speech_t
+		m_eng.eval("speech_files = string(speech_files);", nargout=0)
+		m_eng.workspace["output_files"] = _get_available_filenames(
+			output_t,
+			((args.classes[label] or "none") + "_" for label in labels_t),
+			"wav",
+			1,
+			math.ceil(math.log10(len(speech_t) / n_classes))
+		)
+		m_eng.eval("output_files = string(output_files);", nargout=0)
+		m_eng.workspace["use_cache"] = True
+		m_eng.workspace["adt_root"] = args.adt
+
+		print("Creating samples")
+		try:
+			m_eng.eval("create_samples(speech_files, degradations, output_files, use_cache, adt_root);", nargout=0)
+		except matlab.engine.MatlabExecutionError as e: # pylint: disable=E1101
+			print(e)
+			print("A Matlab error ocurred")
+			print("Launching Matlab desktop so you may debug. Press enter to exit.", end="", flush=True)
+			m_eng.desktop(nargout=0)
+			input()
+			raise e # pylint: disable=E1101
+
+		print("Done")
+		
+	m_eng.exit()
 	print("Dataset created")
 
 def list_files(args):
-	from create_sample import (read_noise,
-		read_speech,
-		get_noise_types)
+	# TODO: this currently imports Matlab (in degradations) and doesn't need to
+	from degradations import get_degradations
 
 	# Find all source sound files
 	noise, n_noisefiles = read_noise(args.data, args.noise)
@@ -188,7 +242,8 @@ def list_files(args):
 	print(f"Found {n_speechfiles} speech files")
 	for t in ["test", "train"]:
 		print(f"\t{sum(len(fs) for d, fs in speech if t in d.lower())} in set \"{t}\"")
-	print(f"Noise types: {', '.join(get_noise_types(noise))}")
+	# This also lists "pad" as a noise type, which is inaccurate
+	print(f"Noise types: {', '.join(map(str, get_degradations(noise)))}")
 
 def prepare(args):
 	from preparations import prep_folder
@@ -241,9 +296,7 @@ if __name__ == "__main__":
 	subparser.set_defaults(func=create)
 
 	group = subparser.add_argument_group("tools")
-	group.add_argument("--matlab", help="Path to Matlab root folder (default: %(default)s)", default=os.path.join("..", "matlab"))
-	group.add_argument("--adt", help="Path to Matlab Audio Degradation Toolbox root folder (default: <DATA>/matlab-audio-degradation-toolbox)", default=None)
-	group.add_argument("-m", "--use-matlab", help="Use the original ADT implemented in Matlab", action="store_true")
+	group.add_argument("--adt", help="Path to Audio Degradation Toolbox root folder (default: <DATA>/adt)", default=None)
 	
 	group = subparser.add_argument_group("output folders")
 	group.add_argument("--output-train", help="Path to training data output folder (default: <DATA>/train)", default=None)
@@ -252,10 +305,11 @@ if __name__ == "__main__":
 
 	group = subparser.add_argument_group("degradation parameters")
 	group.add_argument("--snr", help="Signal-to-noise ratio in dB (speech is considered signal)", type=float, default=None)
+	#TODO: gör att denna funkar
 	group.add_argument("--downsample-speech", help="Downsample speech signal if noise sample rate is lower", action="store_true")
 	group.add_argument("-p", "--pad", help="Pad the speech with PAD seconds of silence at the beginning and end", type=float, default=None)
 
-	subparser.add_argument("-c", "--classes", help="The class types to use in addition to silence (default: all)", nargs="+", default=[])
+	subparser.add_argument("-c", "--classes", help="The class types to use in addition to silence (default: all)", metavar="CLASS", nargs="+", default=[])
 	subparser.add_argument("--train", help="Ratio/number of files in training set (default: %(default).2f)", default=11/15, type=float)
 	subparser.add_argument("--test", help="Ratio/number of files in testing set (default: %(default).2f)", default=4/15, type=float)
 	subparser.add_argument("--no-cache", help="Disable caching noise files. Increases runtime but decreases memory usage.", action="store_true")

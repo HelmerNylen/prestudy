@@ -182,8 +182,11 @@ def create(args):
 	if len(args.data) > 0:
 		m_eng.cd(args.data, nargout=0)
 	if args.adt is None:
-		args.adt = os.path.join(args.data, "matlab-audio-degradation-toolbox")
+		args.adt = os.path.join(args.data, "adt")
 	args.adt = os.path.join(args.adt, "AudioDegradationToolbox")
+	if not os.path.exists(args.adt):
+		print("\nAudio Degradation Toolbox folder does not exist:", args.adt)
+		sys.exit(1)
 	print(" Done")
 
 	# Create datasets
@@ -217,11 +220,13 @@ def create(args):
 			m_eng.eval("create_samples(speech_files, degradations, output_files, use_cache, adt_root);", nargout=0)
 		except matlab.engine.MatlabExecutionError as e: # pylint: disable=E1101
 			print(e)
-			print("A Matlab error ocurred")
+			print("A Matlab error occurred")
 			print("Launching Matlab desktop so you may debug. Press enter to exit.", end="", flush=True)
 			m_eng.desktop(nargout=0)
 			input()
 			raise e # pylint: disable=E1101
+		# TODO: borde också spara matlabvariablerna så att samma dataset kan genereras igen,
+		# och att det går att se vilka filer som användes för att bygga ett visst sample
 
 		print("Done")
 		

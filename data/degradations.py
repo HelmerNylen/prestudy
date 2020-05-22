@@ -29,11 +29,13 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 			degradations = degradations,
 
 		matlab_degradations_by_file.append([])
+		has_normalized = False
 		for degradation in degradations:
 			if degradation is None:
-				if normalize_audio:
+				if normalize_audio and not has_normalized:
 					name = "normalize"
 					params = ""
+					has_normalized = True
 
 					matlab_degradations_by_file[-1].append({"name": name, "params": params})
 			
@@ -51,6 +53,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 					"snrRatio": degradation_parameters.snr,
 					"normalizeOutputAudio": normalize_audio
 				}
+				has_normalized = True
 
 				matlab_degradations_by_file[-1].append({"name": name, "params": params})
 
@@ -70,6 +73,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 					"snrRatio": degradation_parameters.snr,
 					"normalizeOutputAudio": normalize_audio
 				}
+				has_normalized = True
 
 				matlab_degradations_by_file[-1].append({"name": name, "params": params})
 
@@ -88,3 +92,6 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 	m_eng.eval(workspace_var + " = cell2mat(cellfun(@cell2mat, " + workspace_var + ", 'UniformOutput', false)');", nargout=0)
 	
 	return workspace_var
+
+if __name__ == "__main__":
+	print("Please use create_dataset.py")

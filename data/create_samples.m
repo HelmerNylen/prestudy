@@ -25,7 +25,7 @@ function create_samples(speech_files, degradations, output_files, use_cache, adt
 % Author: Helmer Nylen
 
 assert(length(speech_files) == size(degradations, 1) ...
-        && length(degradations) == length(output_files), ...
+        && size(degradations, 1) == length(output_files), ...
     sprintf("Mismatched input lengths: %d speech files, %d degradations, %d output files", ...
         length(speech_files), size(degradations, 1), length(output_files)) ...
 )
@@ -81,7 +81,7 @@ parfor i = 1:N
                             offset = randi(max(1, size(params.addSound, 1) - len + 1));
                             params.addSound = params.addSound(offset:offset+len-1, :);
                         elseif len > size(params.addSound, 1)
-                            offset = randi(size(params.addSound(1)));
+                            offset = randi(size(params.addSound, 1));
                             params.addSound = circshift(params.addSound, -offset);
                         end
                     else

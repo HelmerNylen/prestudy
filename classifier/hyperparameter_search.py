@@ -221,32 +221,6 @@ def search(args):
 			
 	print("All done")
 
-def precision(confusion_table: ConfusionTable, label: str):
-	positives = sum(confusion_table[l, label] for l in confusion_table.true_labels)
-	if positives == 0:
-		return 0
-	else:
-		return confusion_table[label, label] / positives
-
-def recall(confusion_table: ConfusionTable, label: str):
-	return confusion_table[label, label] / confusion_table[label, ...]
-
-def F1_score(confusion_table: ConfusionTable, label: str):
-	_precision = precision(confusion_table, label)
-	_recall = recall(confusion_table, label)
-	if _precision == 0 and _recall == 0:
-		return 0
-	else:
-		return 2 * _precision * _recall / (_precision + _recall)
-
-def average(measure, confusion_table: ConfusionTable, equal_weights=False):
-	if equal_weights:
-		return sum(measure(confusion_table, label) for label in confusion_table.true_labels)\
-					/ len(confusion_table.true_labels)
-	else:
-		return sum(measure(confusion_table, label) * confusion_table[label, ...] for label in confusion_table.true_labels)\
-					/ sum(confusion_table[label, ...] for label in confusion_table.true_labels)
-
 # TODO: parsea args.types ordentligt istället för att mappa str.lower flera gånger och hålla på
 def results(args):
 	if args.saveto is None:
@@ -268,7 +242,7 @@ def results(args):
 			continue
 		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
 
-	metrics = {"Precision": precision, "Recall": recall, "F1-score": F1_score}
+	metrics = {"Precision": ConfusionTable.precision, "Recall": ConfusionTable.recall, "F1-score": ConfusionTable.F1_score}
 	bestPerLabel = None
 	bestAvg = None
 	for fn in files:
@@ -327,7 +301,7 @@ def results(args):
 							continue
 						with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "rb") as f:
 							confusiontable = pickle.load(f)
-						total += average(F1_score, confusiontable)
+						total += confusiontable.average("F1-score")
 						N += 1
 					if N > 0:
 						avgs[value] = total / N
@@ -458,25 +432,20 @@ def epochs(args):
 						json.dump(config, f)
 
 					# Train
+					command = [
+						os.path.join(args.classifier, "classifier.py"),
+						"--models", args.saveto,
+						"train",
+						"-s",
+						"-w", intermediateFile.name if len(args.files) == 0 else args.files[i]
+					]
 					if epoch == 1:
-						command = [
-							os.path.join(args.classifier, "classifier.py"),
-							"--models", args.saveto,
-							"train",
-							"-s",
+						command.extend([
 							"-c", next(iter(config)).lower(),
-							"--config", configFile.name,
-							"-w", intermediateFile.name if len(args.files) == 0 else args.files[i]
-						]
+							"--config", configFile.name
+						])
 					else:
-						command = [
-							os.path.join(args.classifier, "classifier.py"),
-							"--models", args.saveto,
-							"train",
-							"-s",
-							"--read",
-							"-w", intermediateFile.name if len(args.files) == 0 else args.files[i]
-						]
+						command.append("--read")
 					
 					print(*command)
 					result = subprocess.run(
@@ -507,10 +476,10 @@ def epochs(args):
 					sys.exit(1)
 				confusion_table, = pickle.loads(result.stdout)
 				confusion_tables[i].append(confusion_table)
-				print(f"Epoch {epoch}. F1-score: {average(F1_score, confusion_table):.2%}", end="")
+				print(f"Epoch {epoch}. F1-score: {confusion_table.average('F1-score'):.2%}", end="")
 				
 				if len(confusion_tables[i]) >= 2:
-					diff = average(F1_score, confusion_tables[i][-1]) - average(F1_score, confusion_tables[i][-2])
+					diff = confusion_tables[i][-1].average("F1-score") - confusion_tables[i][-2].average("F1-score")
 					print(f", increase: {diff:.2%}")
 					if diff < args.tolerance:
 						print("Minimum increase reached")
@@ -532,9 +501,12 @@ def epochs(args):
 
 def repair(args):
 	sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
+	# Classifier must be defined on __main__ to allow pickle to read classifier files
+	global Classifier
 	from classifier import Classifier
-	globals()["Classifier"] = Classifier
+	Classifier.__module__ = "__main__"
 
+	# The strings "inf" and "-inf" are interpreted as +-np.inf, and saved as such by pickle
 	def fix_inf(d: dict) -> dict:
 		for key in d.keys():
 			if type(d[key]) is dict:
@@ -552,9 +524,9 @@ def repair(args):
 		search = json.load(f)
 	permutations = ConfigPermutations(search)
 
+	# Consider all classifiers with corresponding confusion tables
 	files = next(os.walk(args.saveto))[2]
 	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
-	files = files
 
 	print(f"Found {len(files)} files")
 	equivalents = []
@@ -562,6 +534,7 @@ def repair(args):
 		c = Classifier.from_file(fn + ".classifier", folder=args.saveto)
 		current_type = c.model_type.__name__.lower()
 		x = int(fn)
+		# We can calculate the most likely config id if we know its type and its type-local id
 		best_guess = x
 		for t, l in permutations.totallengths.items():
 			if current_type == t.lower():
@@ -573,16 +546,20 @@ def repair(args):
 			print(end=".", flush=True)
 			equivalents.append(best_guess_x)
 		else:
+			# If our guess is wrong, brute-force search for the config id
 			for ct, config, identifier in permutations:
 				if ct.lower() == current_type and json.dumps(fix_inf(config)) == json.dumps(fix_inf(c.config)):
 					print(end=".", flush=True)
 					equivalents.append(identifier)
 					break
 			else:
+				# If we cannot find an equivalent config, notify the user
 				print("Suggested:\n", json.dumps(permutations[best_guess][1]))
 				print("True:\n", json.dumps(c.config))
 				raise ValueError("Couldn't find equivalents for all")
 	print()
+	
+	# List all suggested renamings
 	may_overwrite = False
 	for original, new in zip(files, map(str, equivalents)):
 		print(f"{original}\t->\t{new}")
@@ -593,6 +570,7 @@ def repair(args):
 	if input("Proceed (y/n)? ").strip().lower()[-1] != "y":
 		return
 	
+	# Rename classifiers and confusion tables
 	for original, new in zip(files, map(str, equivalents)):
 		if original != new:
 			os.rename(
@@ -651,7 +629,7 @@ if __name__ == "__main__":
 		+ "If --start-from-config is set (default), provide 0, 1 (containing <TYPE>) or as many as specified in config filtered by --types.\n"
 		+ "If --start-from-files is set, provide 0 or as many as the number of files specified with --start-from-files filtered by --types.\n"
 		+ "The wildcard argument '*' will use 'latest_<TYPE>.classifier' if --start-from-config is set, and overwrite the provided files if --start-from-files is set.", metavar="FILE", nargs="*")
-	subparser.add_argument("--tolerance", help="Threshold for difference in F1-score. Stops training when this is reached. Default: %(default)f", metavar="TOL", type=float, default=1e-3)
+	subparser.add_argument("--tolerance", help="Threshold for difference in F1-score. Stops training when this is reached. Default: %(default).2e", metavar="TOL", type=float, default=1e-3)
 	subparser.add_argument("--max-epochs", help="Maximum number of epochs to train a classifier (default: %(default)d). Always 1 for SVMs.", type=int, default=1000)
 
 	subparser = subparsers.add_parser("repair", help="Repair a search where the relative configuration indexes have been used as filenames rather than the global ones")

@@ -66,6 +66,7 @@ class ConfusionTable:
 		else:
 			self.data[first_indices, second_indices] = val
 	
+	# TODO: confusion tables brukar ritas upp transponerat
 	def __str__(self):
 		res = []
 		totals_col = not np.alltrue(self.totals == 0)
@@ -88,3 +89,38 @@ class ConfusionTable:
 			res.append(f"Classification time: {self.time:.2f} s" + (f" ({1000 * self.time / sum(self.totals):.2f} ms per sequence)" if totals_col else ""))
 		
 		return "\n".join(res)
+
+	def precision(self, label: str):
+		positives = sum(self[l, label] for l in self.true_labels)
+		if positives == 0:
+			return 0
+		else:
+			return self[label, label] / positives
+
+	def recall(self, label: str):
+		return self[label, label] / self[label, ConfusionTable.TOTAL]
+
+	def F1_score(self, label: str):
+		_precision = self.precision(label)
+		_recall = self.recall(label)
+		if _precision == 0 and _recall == 0:
+			return 0
+		else:
+			return 2 * _precision * _recall / (_precision + _recall)
+	
+	def accuracy(self):
+		return sum(self[label, label] for label in self.true_labels) / sum(self.totals)
+
+	def average(self, measure, equal_weights=False):
+		if isinstance(measure, str):
+			measure = {
+				"precision": self.__class__.precision,
+				"recall": self.__class__.recall,
+				"f1": self.__class__.F1_score, "f1-score": self.__class__.F1_score, "f1_score": self.__class__.F1_score
+			}[measure.lower()]
+		if equal_weights:
+			return sum(measure(self, label) for label in self.true_labels)\
+						/ len(self.true_labels)
+		else:
+			return sum(measure(self, label) * self[label, ConfusionTable.TOTAL] for label in self.true_labels)\
+						/ sum(self[label, ConfusionTable.TOTAL] for label in self.true_labels)

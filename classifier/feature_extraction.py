@@ -51,6 +51,9 @@ def extract_mfcc(folder, overwrite, concatenate=False):
 			print(f"Saved to {path}")
 		arks[noise_type] = path
 	
+	if len(arks) == 0:
+		raise ValueError(f"Folder {folder} is not a dataset")
+	
 	res = dict()
 	# Read all arks
 	for noise_type, ark in arks.items():

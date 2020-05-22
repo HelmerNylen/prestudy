@@ -10,6 +10,9 @@ data/timit/*
 data/noise/*
 data/train/*
 data/test/*
+evaluation/*.classifier
+evaluation/*.confusiontable
+evaluation/plots/*
 
 # Deleted files
 data/__old_create_sample.py

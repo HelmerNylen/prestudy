@@ -116,7 +116,7 @@ class Classifier:
 			if isinstance(classifier, Classifier):
 				return classifier
 			else:
-				raise ValueError(f"File {filename} does not contain a Classifier")
+				raise ValueError(f"File {filename} does not contain a {Classifier} but a {type(classifier)}")
 	@staticmethod
 	def from_bytes(b: bytes):
 		c = pickle.loads(b)

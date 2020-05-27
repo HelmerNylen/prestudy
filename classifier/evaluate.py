@@ -5,12 +5,14 @@ import argparse
 import subprocess
 import pickle
 from confusion_table import ConfusionTable
-from time import time
+from time import time, strftime, localtime
 from math import floor
 
 available_classifiers = ["GMMHMM", "GenHMM", "LSTM", "CNN", "SVM"]
 
 def _scores_stats(scores: dict):
+	"""Get the combinations of possibly valid keys for a scores dict"""
+
 	import numpy as np
 	classifiers = np.unique([classifier_type for classifier_type, _, _, _ in scores])
 	datasets = np.unique([dataset_name for _, dataset_name, _, _ in scores])
@@ -36,12 +38,12 @@ def coverage(args):
 		sys.exit(1)
 
 	print("Loading confusion tables ...", end="", flush=True)
-	scores = dict()
+	scores = set()
 	for filename in next(os.walk(args.working_folder))[2]:
 		if filename.endswith(".confusiontable"):
 			with open(os.path.join(args.working_folder, filename), "rb") as f:
 				confusion_table = pickle.load(f)
-			scores[_unpack_filename(filename)] = confusion_table.average("F1-score")
+			scores.add(_unpack_filename(filename))
 	print(" Done")
 	print()
 
@@ -51,6 +53,7 @@ def coverage(args):
 		print("Folder is empty")
 		return
 	
+	# Find datasets for which the last epoch is incomplete
 	incomplete = dict()
 	for classifier_type in classifiers:
 		for dataset in datasets:
@@ -60,6 +63,7 @@ def coverage(args):
 					incomplete[(classifier_type, dataset)] = instance
 					break
 	
+	# Print all stats
 	print("[(Completed in last epoch)/]Instances x Epochs")
 	maxlen = max(len(d) for d in datasets)
 	print(" " * maxlen, *map(lambda s: s.rjust(10), classifiers), sep="  ")
@@ -73,13 +77,17 @@ def coverage(args):
 		print()
 	
 
-def _create_plots(scores: dict, folder: str, partial: str="error", format: str="svg", accuracy: bool=False):
+def _create_plots(scores: dict, folder: str, partial: str="error", format: str="pdf", accuracy: bool=False):
+	"""Create relevant plots for the pre-study"""
+
 	import matplotlib.pyplot as plt
 	import numpy as np
 	assert partial in ("error", "allow", "ignore")
 
 	scorestr = ("Accuracy", "accuracy") if accuracy else ("F1-score", "F1-score")
 	classifiers, datasets, num_instances, num_epochs = _scores_stats(scores)
+
+	consistent_colors = dict()
 	
 	# Average training progress on each dataset
 	for dataset in datasets:
@@ -96,7 +104,7 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 				for instance in range(num_instances[(classifier_type, dataset)]):
 					if (classifier_type, dataset, instance, epoch) not in scores:
 						if partial == "allow":
-							break
+							continue
 						elif partial == "ignore":
 							vals = []
 							break
@@ -112,6 +120,7 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 			x = range(1, len(avgs) + 1)
 			if len(x) > 1:
 				line, = plt.plot(x, avgs, label=classifier_type, marker='.')
+				consistent_colors[classifier_type] = line.get_color()
 				plt.fill_between(x, stats[0.25], stats[0.75], color=line.get_color(), alpha=0.2, zorder=-1)
 				minval = min(minval, *stats[0.25])
 				plotted_anything = True
@@ -130,6 +139,8 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 		else:
 			print("No data to plot for dataset", dataset)
 	
+	epoch_used = dict()
+
 	# Score distribution
 	for dataset in datasets:
 		plt.figure()
@@ -138,12 +149,16 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 		for classifier_type in classifiers:
 			if num_epochs[(classifier_type, dataset)] == num_instances[(classifier_type, dataset)] == 0:
 				continue
-			epoch = num_epochs[(classifier_type, dataset)]
-			instances_in_last = sum(1
-				for instance in range(num_instances[(classifier_type, dataset)])
-					if (classifier_type, dataset, instance, epoch) in scores)
-			if instances_in_last != num_instances[(classifier_type, dataset)] and partial == "ignore":
-				epoch -= 1
+			
+			#epoch = num_epochs[(classifier_type, dataset)]
+			#instances_in_last = sum(1
+			#	for instance in range(num_instances[(classifier_type, dataset)])
+			#		if (classifier_type, dataset, instance, epoch) in scores)
+			#if instances_in_last != num_instances[(classifier_type, dataset)] and partial == "ignore":
+			#	epoch -= 1
+
+			epoch = max(1, num_epochs[(classifier_type, dataset)] - 1)
+			epoch_used[(classifier_type, dataset)] = epoch
 			boxplot_data.append((
 				[scores[(classifier_type, dataset, instance, epoch)]
 					for instance in range(num_instances[(classifier_type, dataset)])
@@ -158,6 +173,50 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 		plt.grid(axis="y")
 		plt.title(f"Classifier performance distribution on {dataset}")
 		plt.savefig(os.path.join(folder, "dist_" + dataset + "." + format))
+
+	# Dataset difficulty
+	plt.figure()
+	width = 1 / (len(datasets) + 2)
+	for i, classifier_type in enumerate(classifiers):
+		# This probably does not consider --allow-partial and --ignore-partial they way it should
+		avgs = []
+		for dataset in datasets:
+			vals = []
+			for instance in range(num_instances[(classifier_type, dataset)]):
+				if (classifier_type, dataset, instance, epoch_used[(classifier_type, dataset)]) in scores:
+					vals.append(scores[(classifier_type, dataset, instance, epoch_used[(classifier_type, dataset)])])
+			avgs.append(np.nan if len(vals) == 0 else sum(vals) / len(vals))
+
+		if classifier_type not in consistent_colors:
+			consistent_colors[classifier_type] = [c
+				for c in plt.rcParams['axes.prop_cycle'].by_key()['color']
+					if c not in consistent_colors.values()][0]
+		
+		plt.bar(
+			np.arange(len(datasets)) + width * (i + 0.5 - len(classifiers) / 2),
+			avgs,
+			width=width,
+			label=classifier_type,
+			color=consistent_colors[classifier_type]
+		)
+		plt.legend()
+		plt.xlabel("Dataset")
+		plt.xticks(range(len(datasets)), datasets)
+		plt.ylim((floor(min(scores.values()) * 20) / 20, 1))
+		plt.ylabel(scorestr[0])
+		yticks, _ = plt.yticks()
+		plt.yticks(yticks, [f"{y:.0%}" for y in yticks])
+		plt.grid(axis="y")
+		plt.title(f"Classifier performance by dataset")
+		plt.gcf().autofmt_xdate()
+		plt.savefig(os.path.join(folder, "datasets." + format), bbox_inches='tight')
+	
+	print([(t, v) for t, v in scores.items() if v == max(scores.values())])
+	print([(t, v) for t, v in scores.items() if v == min(scores.values())])
+	
+	# Suppress warnings
+	import warnings
+	warnings.filterwarnings("ignore")
 
 def plot(args):
 	if not os.path.exists(args.working_folder):
@@ -213,6 +272,9 @@ def _unpack_filename(filename):
 	epoch = int(split[-1])
 	return classifier_type, dataset, instance, epoch
 
+def _time() -> str:
+	return strftime("%H:%M:%S", localtime(time()))
+
 def repeat(args):
 	if args.tolerance < 0:
 		print("Tolerance must be >= 0")
@@ -221,6 +283,7 @@ def repeat(args):
 		print("Tolerance must be >= 1")
 		sys.exit(1)
 
+	# Defaults for data folders
 	if args.train is None:
 		args.train = os.path.join(args.data, "train")
 	if not os.path.exists(args.train):
@@ -232,6 +295,7 @@ def repeat(args):
 		print(f"Testing folder {args.test} does not exist")
 		sys.exit(1)
 	
+	# Default for config path
 	if args.config is None:
 		args.config = os.path.join(args.classifier, "defaults.json")
 	if not os.path.exists(args.config):
@@ -242,6 +306,7 @@ def repeat(args):
 		print(f"Creating working folder {args.working_folder}")
 		os.mkdir(args.working_folder)
 	
+	# Locate all datasets
 	datasets = []
 	for folder in tuple(next(os.walk(args.train))[1]) + (None,):
 		if folder is None:
@@ -257,7 +322,8 @@ def repeat(args):
 			continue
 		if len(next(os.walk(trainpath))[2]) > 0 and len(next(os.walk(testpath))[2]) > 0:
 			datasets.append((folder or "root", trainpath, testpath))
-
+	
+	# Filter datasets
 	if args.datasets is not None:
 		for name in args.datasets:
 			if name.lower() not in (n.lower() for n, _, _ in datasets):
@@ -277,6 +343,7 @@ def repeat(args):
 
 		for dataset_name, trainpath, testpath in datasets:
 			# Similar to hyperparameter_search.py epochs
+			# Train all instances of a classifier on a dataset until average test accuracy or F1-score stagnates
 			epoch = 0
 			while True:
 				epoch += 1
@@ -316,7 +383,7 @@ def repeat(args):
 							"--read", _filename(classifier_type, dataset_name, instance, epoch - 1)
 						])
 					
-					print(*command)
+					print(_time() + ">", *command)
 					result = subprocess.run(
 						command,
 						encoding=sys.getdefaultencoding(),
@@ -338,7 +405,7 @@ def repeat(args):
 						"--write-stdout",
 						current_filename
 					]
-					print(*command)
+					print(_time() + ">", *command)
 					result = subprocess.run(
 						command,
 						stdout=subprocess.PIPE
@@ -479,7 +546,6 @@ if __name__ == "__main__":
 	subparser.add_argument("working_folder", help="Folder in which to store classifiers while evaluating them")
 	subparser.add_argument("num_instances", help="Number of classifiers of each type per dataset to average", metavar="N", type=int)
 
-	#subparser.add_argument("--save", help="Save the trained classifiers in the working folder instead of deleting them", action="store_true")	
 	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers (default: %(default)s)", nargs="+", default=available_classifiers[:-1])
 	subparser.add_argument("--datasets", help="Names of data sets in <TRAIN> and <TEST> to use. Use 'root' to refer to root folder. Default: use all datasets.", default=None, nargs="+")
 	subparser.add_argument("-a", "--accuracy", help="Use accuracy instead of F1-score", action="store_true")

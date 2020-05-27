@@ -16,6 +16,8 @@ from shutil import copy2
 from tempfile import NamedTemporaryFile
 
 class ConfigPermutations:
+	"""Generates any permutation of config values as specified by a search config"""
+
 	def __init__(self, search: dict):
 		self.search = search
 		self.types = list(search.keys())
@@ -34,6 +36,7 @@ class ConfigPermutations:
 		return sum(self.totallengths.values())
 	
 	def shuffle(self):
+		"""Randomly shuffle the iteration order and indexes of permutations"""
 		shuffle(self.current_shuffle)
 
 	def _get_combination(self, x):
@@ -51,6 +54,7 @@ class ConfigPermutations:
 		return _type, list(tuple(product(*(range(l) for l in self.lengths[_type].values())))[x]), inner_x
 
 	def __getitem__(self, x):
+		"""Get a tuple with (classifier type (str), config (dict), configuration id (int))"""
 		_type, combination, inner_x = self._get_combination(x)
 		combination_idx = 0
 		config = dict()
@@ -69,6 +73,8 @@ class ConfigPermutations:
 			yield self[x]
 
 def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate_name):
+	"""Train and test a config on the default dataset"""
+
 	if genhmm_min_batch < 1: genhmm_min_batch = 1
 	with NamedTemporaryFile("w") as configFile:
 		with open(configFile.name, "w") as f:
@@ -91,6 +97,7 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate
 			encoding=sys.getdefaultencoding(),
 			stderr=subprocess.PIPE, stdout=subprocess.PIPE
 		)
+		# GenHMM uses a lot of VRAM and lowering the batch size sometimes helps with out of memory errors
 		while result.returncode and classifier_type.lower() == "genhmm" and int(config["train"]["batch_size"]/2) >= genhmm_min_batch:
 			# Try decreasing batch size and try again
 			config["train"]["batch_size"] = int(config["train"]["batch_size"] / 2)
@@ -120,6 +127,8 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate
 	if result.returncode:
 		print("Could not test", json.dumps({classifier_type: config}))
 		return
+	
+	# Save confusion table and classifier to disk
 	confusion_table, = pickle.loads(result.stdout)
 	with open(os.path.join(args.saveto, str(x) + ".confusiontable"), "wb") as f:
 		pickle.dump(confusion_table, f)
@@ -129,6 +138,7 @@ def train_test_config(classifier_type, config, x, genhmm_min_batch, intermediate
 	)
 
 def search(args):
+	# Config and working folder defaults
 	if args.saveto is None:
 		args.saveto = os.path.join(args.classifier, "search")
 	if args.json is None:
@@ -141,12 +151,11 @@ def search(args):
 
 	with open(args.json, "r") as f:
 		search = json.load(f)
-
 	permutations = ConfigPermutations(search)
 	print(f"{len(permutations)} total combinations")
+
 	if not os.path.exists(args.saveto):
 		os.mkdir(args.saveto)
-	
 	with open(os.path.join(args.saveto, "search.json"), "w") as f:
 		json.dump(search, f)
 	
@@ -174,7 +183,7 @@ def search(args):
 	permutations.shuffle()
 	i = 0
 	total = sum(permutations.totallengths[t] for t in permutations.types if t.lower() in map(str.lower, args.types))
-	if args.group:
+	if args.group: # Group classifiers, i.e. complete search for one type before proceeding to next
 		for current_classifier_type in ['LSTM', 'CNN', 'GMMHMM', 'GenHMM', 'SVM']: # permutations.types
 			if len(args.types) > 0 and current_classifier_type.lower() not in map(str.lower, args.types):
 				print("Skipping", current_classifier_type)
@@ -199,7 +208,7 @@ def search(args):
 				except:
 					pass
 
-	else:
+	else: # If classifiers are not grouped
 		for classifier_type, config, x in permutations:
 			if len(args.types) > 0 and classifier_type.lower() not in map(str.lower, args.types):
 				continue
@@ -221,19 +230,20 @@ def search(args):
 			
 	print("All done")
 
-# TODO: parsea args.types ordentligt istället för att mappa str.lower flera gånger och hålla på
 def results(args):
 	if args.saveto is None:
 		args.saveto = os.path.join(args.classifier, "search")
 	
+	# Create a config id <=> config mapping from the search file
 	with open(os.path.join(args.saveto, "search.json"), "r") as f:
 		search = json.load(f)
 	permutations = ConfigPermutations(search)
 
+	# List valid classifier files and filter out the unwanted types
 	files = next(os.walk(args.saveto))[2]
 	files = [f for f, ext in map(os.path.splitext, files) if ext == ".classifier" and (f + ".confusiontable") in files]
-
 	if len(args.types) > 0:
+		# As the lowercase args.types is used mutiple times it should probably be properly converted
 		files = [f for f in files if permutations[int(f)][0].lower() in map(str.lower, args.types)]
 
 	print(f"{len(files)} of {len(permutations)} classifiers in folder")
@@ -242,6 +252,7 @@ def results(args):
 			continue
 		print(sum(permutations[int(f)][0] == classifier_type for f in files), "of type", classifier_type)
 
+	# Summarize metrics about each classifier and keep the best
 	metrics = {"Precision": ConfusionTable.precision, "Recall": ConfusionTable.recall, "F1-score": ConfusionTable.F1_score}
 	bestPerLabel = None
 	bestAvg = None
@@ -264,6 +275,7 @@ def results(args):
 			if avg > bestAvg[metric][0]:
 				bestAvg[metric] = (avg, x)
 	
+	# Print the highest scoring classifier configs and classifier tables
 	all_ids = set(x for metric in metrics for _, x in bestPerLabel[metric].values())\
 			.union(x for _, x in bestAvg.values())
 	for x in all_ids:
@@ -280,7 +292,8 @@ def results(args):
 		print(f"Best average: {bestAvg[metric][0]:.2%} by model {bestAvg[metric][1]}")
 		print()
 	
-	# Kan göras mycket effektivare
+	# Find the estimated optimal config settings and list their performance if they have been tested
+	# This is very, very ineffective
 	if args.optimal:
 		print("Estimated optimal settings: ")
 		for classifier_type in permutations.types:
@@ -345,7 +358,7 @@ def coverage(args):
 			f"({len(files_by_type[classifier_type]) / permutations.totallengths[classifier_type]:.2%})"
 		)
 
-
+	# Check if all possible values for each parameter have been tested
 	has_tested = dict()
 	for classifier_type in permutations.types:
 		has_tested[classifier_type] = [(cat_key, [False] * l)

@@ -29,6 +29,8 @@ class SVM(Model):
 		for noise_type, sequences in train_data.items():
 			if Model.is_concatenated(sequences):
 				sequences = Model.split(sequences)
+			
+			# Split each sequence into frames
 			l = 0
 			for sequence in sequences:
 				for ptr in range(0, len(sequence) - self.frame_len, self.frame_len - self.frame_overlap):
@@ -36,9 +38,12 @@ class SVM(Model):
 					vector.shape = -1
 					data.append(vector)
 					l += 1
+			# The label of a frame is the same as for the entire sequence
 			labels.extend([self.noise_types.index(noise_type)] * l)
+
 		if self.svm.verbose:
 			print(f"Training SVM on {len(data)} vectors ...")
+		# Normalize frames to have zero mean and unit variance
 		self.scaler.fit(data)
 		data = self.scaler.transform(data, True)
 		self.svm.fit(data, labels)
@@ -49,6 +54,8 @@ class SVM(Model):
 		if Model.is_concatenated(test_data):
 			test_data = Model.split(test_data)
 
+		# Scoring is done the same way as in the CNN
+		# The score for each label is the number of frames which were given the label
 		scores = np.zeros((len(test_data), len(self.noise_types)))
 		for i, sequence in enumerate(test_data):
 			data = []

@@ -4,6 +4,7 @@ from random import choice
 
 additive_noise_prefix = "additive_"
 
+# Define degradation names here
 def get_degradations(noise_files: dict) -> list:
 	res = [None, "pad", "white"]
 	res.extend(additive_noise_prefix + k for k in noise_files.keys())
@@ -31,6 +32,10 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 		matlab_degradations_by_file.append([])
 		has_normalized = False
 		for degradation in degradations:
+			# No degradation.
+			# Normalize audio if this has not already been done.
+			# All other degradations normalize audio except if specifically told not to.
+			# TODO: make normalize audio, snr etc. non-global settings
 			if degradation is None:
 				if normalize_audio and not has_normalized:
 					name = "normalize"
@@ -39,6 +44,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 
 					matlab_degradations_by_file[-1].append({"name": name, "params": params})
 			
+			# Add additive noise from a recording.
 			elif degradation.startswith(additive_noise_prefix) and degradation in allowed_degradations:
 				if degradation_parameters.snr is None:
 					raise ValueError("Please specify SNR to apply additive noise")
@@ -53,10 +59,12 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 					"snrRatio": degradation_parameters.snr,
 					"normalizeOutputAudio": normalize_audio
 				}
-				has_normalized = True
+				has_normalized = normalize_audio
 
 				matlab_degradations_by_file[-1].append({"name": name, "params": params})
 
+			# Pad a sample with silence.
+			# Does not degrade the sample in the same sense, but still an operation we want to do as part of the same pipeline
 			elif degradation == "pad":
 				if degradation_parameters.snr is None:
 					raise ValueError("Please specify padding amount to apply padding")
@@ -66,6 +74,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 
 				matlab_degradations_by_file[-1].append({"name": name, "params": params})
 
+			# Add additive white noise.
 			elif degradation == "white":
 				name = "addNoise"
 				params = {
@@ -73,7 +82,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 					"snrRatio": degradation_parameters.snr,
 					"normalizeOutputAudio": normalize_audio
 				}
-				has_normalized = True
+				has_normalized = normalize_audio
 
 				matlab_degradations_by_file[-1].append({"name": name, "params": params})
 
@@ -82,6 +91,7 @@ def setup_matlab_degradations(noise_files: dict, speech_files: list, degradation
 
 		max_num_degradations = max(max_num_degradations, len(matlab_degradations_by_file[-1]))
 	
+	# Pad the degradation list with identity degradations so that it is a proper rectangular matrix
 	for degradations in matlab_degradations_by_file:
 		if len(degradations) < max_num_degradations:
 			degradations.extend([null_degradation] * (max_num_degradations - len(degradations)))

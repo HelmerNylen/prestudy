@@ -200,8 +200,13 @@ def create(args):
 		degradations = [args.classes[label] for label in labels_t]
 		if args.pad is not None:
 			degradations = [["pad", degradation] for degradation in degradations]
+		# Load degradation instructions into Matlab memory
+		# The overhead for passing audio data between Python and Matlab is extremely high,
+		# so Matlab is only sent the filenames and left to figure out the rest for itself
+		# Further, certain datatypes (struct arrays) cannot be sent to/from Python
 		setup_matlab_degradations(noise_t, speech_t, degradations, m_eng, args, "degradations")
 
+		# Store all variables in Matlab memory
 		m_eng.workspace["speech_files"] = speech_t
 		m_eng.eval("speech_files = string(speech_files);", nargout=0)
 		m_eng.workspace["output_files"] = _get_available_filenames(
@@ -217,16 +222,18 @@ def create(args):
 
 		print("Creating samples")
 		try:
+			# Actual function call to create_samples.m, which in turn uses the ADT
 			m_eng.eval("create_samples(speech_files, degradations, output_files, use_cache, adt_root);", nargout=0)
+			# Save degradation instructions so that a sample can be recreated if needed
+			m_eng.save(os.path.join(output_t, "degradations.mat"), "speech_files", "degradations", "output_files", nargout=0)
+			
 		except matlab.engine.MatlabExecutionError as e: # pylint: disable=E1101
 			print(e)
 			print("A Matlab error occurred")
 			print("Launching Matlab desktop so you may debug. Press enter to exit.", end="", flush=True)
 			m_eng.desktop(nargout=0)
 			input()
-			raise e # pylint: disable=E1101
-		# TODO: borde också spara matlabvariablerna så att samma dataset kan genereras igen,
-		# och att det går att se vilka filer som användes för att bygga ett visst sample
+			raise e
 
 		print("Done")
 		
@@ -234,7 +241,7 @@ def create(args):
 	print("Dataset created")
 
 def list_files(args):
-	# TODO: this currently imports Matlab (in degradations) and doesn't need to
+	# This currently imports Matlab (in degradations) and doesn't need to
 	from degradations import get_degradations
 
 	# Find all source sound files
@@ -310,8 +317,9 @@ if __name__ == "__main__":
 
 	group = subparser.add_argument_group("degradation parameters")
 	group.add_argument("--snr", help="Signal-to-noise ratio in dB (speech is considered signal)", type=float, default=None)
-	#TODO: gör att denna funkar
-	group.add_argument("--downsample-speech", help="Downsample speech signal if noise sample rate is lower", action="store_true")
+	# TODO: implement?
+	# Currently, noise is down- or upsampled to match speech
+	# group.add_argument("--downsample-speech", help="Downsample speech signal if noise sample rate is lower", action="store_true")
 	group.add_argument("-p", "--pad", help="Pad the speech with PAD seconds of silence at the beginning and end", type=float, default=None)
 
 	subparser.add_argument("-c", "--classes", help="The class types to use in addition to silence (default: all)", metavar="CLASS", nargs="+", default=[])

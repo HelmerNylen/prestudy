@@ -38,6 +38,7 @@ class GenHMM(Model):
 				raise
 		return False
 
+	# Adaptation of gm_hmm/bin/train_class_gen.py
 	def train(self, train_data, config):
 		if Model.is_concatenated(train_data):
 			train_data = Model.split(train_data)

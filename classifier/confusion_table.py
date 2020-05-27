@@ -1,6 +1,7 @@
 import numpy as np
 
 class ConfusionTable:
+	"""Confusion table keeping track of testing metrics"""
 	TOTAL = ...
 	def __init__(self, true_labels, confused_labels):
 		self.true_labels = np.array(true_labels)
@@ -66,8 +67,9 @@ class ConfusionTable:
 		else:
 			self.data[first_indices, second_indices] = val
 	
-	# TODO: confusion tables brukar ritas upp transponerat
+	# This draws the confusion table transposed from the usual convention, which may be, well, confusing
 	def __str__(self):
+		"""Get a string representation summarizing the confusion table"""
 		res = []
 		totals_col = not np.alltrue(self.totals == 0)
 
@@ -91,6 +93,7 @@ class ConfusionTable:
 		return "\n".join(res)
 
 	def precision(self, label: str):
+		"""Compute the precision for a label"""
 		positives = sum(self[l, label] for l in self.true_labels)
 		if positives == 0:
 			return 0
@@ -98,9 +101,11 @@ class ConfusionTable:
 			return self[label, label] / positives
 
 	def recall(self, label: str):
+		"""Compute the recall for a label"""
 		return self[label, label] / self[label, ConfusionTable.TOTAL]
 
 	def F1_score(self, label: str):
+		"""Compute the F1-score for a label"""
 		_precision = self.precision(label)
 		_recall = self.recall(label)
 		if _precision == 0 and _recall == 0:
@@ -109,9 +114,15 @@ class ConfusionTable:
 			return 2 * _precision * _recall / (_precision + _recall)
 	
 	def accuracy(self):
+		"""Compute the total accuracy"""
 		return sum(self[label, label] for label in self.true_labels) / sum(self.totals)
 
 	def average(self, measure, equal_weights=False):
+		"""Compute the average of a certain metric in the table,
+		optionally not weighted by the number of tested points in each class.
+		
+		measure can be either precision, recall or F1-score."""
+		
 		if isinstance(measure, str):
 			measure = {
 				"precision": self.__class__.precision,

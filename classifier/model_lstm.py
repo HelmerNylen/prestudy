@@ -6,7 +6,6 @@ import numpy as np
 from model import Model
 from math import ceil
 
-# TODO: Non-constant learning rate
 class LSTM(Model):
 	MULTICLASS = True
 	def __init__(self, config: dict, noise_types: list):

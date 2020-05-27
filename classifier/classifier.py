@@ -12,24 +12,35 @@ from model import Model
 from confusion_table import ConfusionTable
 
 class Classifier:
+	"""Serves as an interface for classification using a certain type of model and correspondig configuration"""
+
 	def __init__(self, noise_types: list, model_type: Model, config: dict, silent: bool):
 		self.model_type = model_type
 		self.config = config[model_type.__name__]
 
 		if silent:
+			# Overwrite any verbosity flags
 			for category in self.config:
 				if "verbose" in self.config[category]:
 					self.config[category]["verbose"] = False
 
 		if self.model_type.MULTICLASS:
+			# Create a single model for classification, with knowledge of all noise types
 			self.model = model_type(noise_types=noise_types, config=self.config)
 		else:
-			self.models = dict(
-				(noise_type, model_type(config=self.config))
+			# Create multiple models for classification, each having knowledge of its own noise type
+			self.models = {noise_type: model_type(config=self.config)
 				for noise_type in noise_types
-			)
+			}
 	
 	def train(self, labeled_features, models_folder=None, silent=False):
+		"""Train the classifier's model for one epoch.
+		
+		If models_folder is specified and the model type is not multi-class,
+		an intermediate version is saved during training to prevent loss of progress in case of an error
+		
+		If silent is set, stdout is redirected to stderr and some informational output is removed"""
+
 		if self.model_type.MULTICLASS:
 			with redirect_stdout(sys.stderr if silent else sys.stdout):
 				self.model.train(labeled_features, config=self.config)
@@ -55,6 +66,8 @@ class Classifier:
 			os.remove(os.path.join(models_folder, f"intermediate_{self.model_type.__name__}.classifier"))
 	
 	def label(self, features, return_scores=False, silent=False):
+		"""Label a set of feature sequences. Use test() to test performance on a dataset."""
+
 		if "score" in self.config:
 			kwargs = self.config["score"]
 		else:
@@ -79,6 +92,10 @@ class Classifier:
 		return (predicted_class, noise_types) + ((scores,) if return_scores else ())
 			
 	def test(self, labeled_features, silent=False) -> ConfusionTable:
+		"""Test the classifier's performance on a dataset.
+		
+		Returns a confusion table."""
+
 		res = ConfusionTable(
 			sorted(labeled_features.keys()),
 			sorted(self.model.get_noise_types() if self.model_type.MULTICLASS else self.models.keys())
@@ -98,6 +115,10 @@ class Classifier:
 
 
 	def save_to_file(self, filename, folder=None, verbose=False):
+		"""Save a classifier to a file (usually with the .classifier extension).
+		
+		Note that the config is saved as well."""
+
 		if folder is not None and not os.path.exists(folder):
 			if verbose:
 				print(f"Creating folder {folder}")
@@ -109,6 +130,8 @@ class Classifier:
 	
 	@staticmethod
 	def from_file(filename, folder=None) -> 'Classifier':
+		"""Read a classifier from file"""
+
 		if folder is not None:
 			filename = os.path.join(folder, filename)
 		with open(filename, 'rb') as f:
@@ -117,8 +140,12 @@ class Classifier:
 				return classifier
 			else:
 				raise ValueError(f"File {filename} does not contain a {Classifier} but a {type(classifier)}")
+
 	@staticmethod
 	def from_bytes(b: bytes):
+		"""Read classifier(s) from a byte sequence.
+		
+		This is a generator yielding each classifier detected in the byte sequence."""
 		c = pickle.loads(b)
 		if isinstance(c, Classifier):
 			yield c
@@ -132,10 +159,17 @@ class Classifier:
 
 	@staticmethod
 	def find_classifiers(folder):
+		"""Find all files ending with .classifier in the provided folder, non-recursively"""
+
 		files = next(os.walk(folder, followlinks=True))[2]
 		return [os.path.join(folder, f) for f in files if os.path.splitext(f)[1] == ".classifier"]
 
 def get_kaldi_root(assign=False):
+	"""kaldi_io uses an environment variable to find the Kaldi library's root folder.
+	This returns that environment variable if it exists, or $PWD/kaldi otherwise.
+	
+	If assign is True, the value of $PWD/kaldi is set as the Kaldi root."""
+
 	if 'KALDI_ROOT' in os.environ:
 		return os.environ['KALDI_ROOT']
 	else:
@@ -145,6 +179,8 @@ def get_kaldi_root(assign=False):
 		return path
 
 def allow_gm_hmm_import(folder):
+	"""Make the gm_hmm folder discoverable on sys.path, so that GenHMM and GMMHMM dependencies can be imported"""
+	
 	if os.path.exists(folder):
 		sys.path.append(os.path.join(folder, os.pardir))
 	else:
@@ -165,6 +201,7 @@ def train(args):
 	from model_cnn import CNN
 	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM, CNN]
 
+	# Defaults for data and models folders
 	if args.data is None:
 		args.data = ""
 	if args.train is None:
@@ -173,6 +210,7 @@ def train(args):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
 	
+	# Determine how the user wants their classifiers saved
 	if len(args.write) == 1:
 		args.write = args.write[0]
 	if isinstance(args.write, str):
@@ -184,10 +222,12 @@ def train(args):
 		print(f"Invalid number of write files ({len(args.write)}, expected 0 or {len(args.classifiers) or len(supported_classifiers)})")
 		sys.exit(1)
 
-	if args.config_stdin:
-		config = json.loads(input())
+	#if args.config_stdin:
+	#	config = json.loads(input()) # This doesn't work, sys.stdin.buffer.read() might.
 
-	elif args.read is not None:
+	#elif args.read is not None:
+	if args.read is not None:
+		# Read classifiers from disk
 		config = dict()
 		if len(args.read) == 0:
 			args.read = args.write
@@ -211,12 +251,15 @@ def train(args):
 			config[classifiers[-1].model_type.__name__] = classifiers[-1].config
 
 	else:
+		# Create new classifiers using the provided config
 		with open(args.config, "r") as f:
 			config = json.load(f)
 	
 	args.silent = args.silent or args.write_stdout
 	
 	if args.override:
+		# Override any specified config values
+		# This also updates the classifiers' configs any have been read from disk
 		for path, value in args.override:
 			d = config
 			path = path.split(".")
@@ -230,21 +273,25 @@ def train(args):
 				d = d[possible[0]]
 			d[path[-1]] = json.loads(value)
 
+	# Get features
 	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
 		feats = extract_mfcc(args.train, args.recompute)
 
+	# Create classifiers (unless previously read from disk)
 	if args.read is None:
 		classifiers = []
 		for supported_classifier in supported_classifiers:
 			if len(args.classifiers) == 0 or supported_classifier.__name__.lower() in args.classifiers:
 				classifiers.append(Classifier(feats.keys(), supported_classifier, config, silent=args.silent))
 
+	# Train the classifiers for the specified number of epochs
 	for epoch in range(1, args.epochs + 1):
 		for i, classifier in enumerate(classifiers):
 			if classifier.model_type == SVM and epoch > 1:
 				continue
-
+			# Train
 			classifier.train(feats, silent=args.silent, models_folder=args.models)
+			# Save classifier
 			if isinstance(args.write, str):
 				classifier.save_to_file(
 					filename=re.sub(
@@ -263,6 +310,7 @@ def train(args):
 			print("Epoch", epoch)
 
 	if args.write_stdout:
+		# Send trained classifiers on stdout
 		sys.stdout.buffer.write(pickle.dumps(classifiers))
 
 	if not args.silent:
@@ -284,6 +332,7 @@ def test(args):
 	from model_cnn import CNN
 	supported_classifiers = [GMMHMM, GenHMM, LSTM, SVM, CNN]
 
+	# Defaults for data and models folders
 	if args.data is None:
 		args.data = ""
 	if args.test is None:
@@ -294,9 +343,7 @@ def test(args):
 	
 	args.silent = args.silent or args.write_stdout
 
-	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
-		feats = extract_mfcc(args.test, args.recompute)
-
+	# Read classifiers, either from disk or stdin
 	if not args.silent:
 		print("Reading classifiers ...", end="", flush=True)
 	if args.read_stdin:
@@ -318,8 +365,14 @@ def test(args):
 		sys.exit(1)
 	if not args.silent:
 		print(f"Loaded {len(classifiers)} classifier{'' if len(classifiers) == 1 else 's'}.")
+	
+	# Get features
+	with redirect_stdout(sys.stderr if args.silent else sys.stdout):
+		feats = extract_mfcc(args.test, args.recompute)
 
+	if not args.silent:
 		print("Calculating scores ...", flush=True)
+	# Score all classifiers
 	confusion_tables = []
 	for classifier in classifiers:
 		if not args.silent:
@@ -327,16 +380,18 @@ def test(args):
 		confusion_tables.append(classifier.test(feats))
 	if not args.silent:
 		print("Done")
-	
+
+		# Print confusion tables to console
 		for classifier, confusion_table in zip(classifiers, confusion_tables):
 			print("Confusion table for", classifier.model_type.__name__)
 			print(confusion_table)
 			print()
 	
 	if args.write_stdout:
+		# Send confusion tables on stdout
 		sys.stdout.buffer.write(pickle.dumps(confusion_tables))
 
-def ls(args):
+def _list(args):
 	if args.kaldi is None:
 		get_kaldi_root(assign=True)
 	else:
@@ -355,6 +410,7 @@ def ls(args):
 		print("Models folder does not exist: " + args.models)
 		sys.exit(1)
 
+	# Get information about all classifiers in the models folder
 	classifiers = []
 	for f in Classifier.find_classifiers(args.models):
 		c = Classifier.from_file(f, folder=args.models)
@@ -374,6 +430,7 @@ def ls(args):
 		print(f"No classifiers in {args.models}")
 	
 
+"""
 def test_vad(args):
 	from feature_extraction import load_all_train
 
@@ -391,6 +448,7 @@ def test_vad(args):
 			total = sum(len(row) for row in a)
 			speech = sum(sum(row) for row in a)
 			print(f"\tVAD aggressiveness {agg} flags {speech/total:.0%} as speech")
+"""
 
 if __name__ == "__main__":
 	supported_types = ["GenHMM", "GMMHMM", "LSTM", "SVM", "CNN"]
@@ -429,8 +487,8 @@ if __name__ == "__main__":
 	configs.add_argument("--config", help="Path to classifier config file (default: $PWD/classifier/defaults.json)", default=os.path.join(os.getcwd(), "classifier", "defaults.json"))
 	configs.add_argument("--read", help="Continue training existing classifiers for another epoch. Note that learning rates and iteration counts can be overridden by -o.\n"
 		+ "Specify files relative to <MODELS> to read classifier(s) from. Must be 0, 1 (containing <TYPE>), or same as number of classes. If 0 files are provided the value of --write is used.", metavar="FILE", nargs="*", default=None)
-	# Not working
-	configs.add_argument("--config-stdin", help="Read config from stdin", action="store_true")
+	# TODO: Not working
+	#configs.add_argument("--config-stdin", help="Read config from stdin", action="store_true")
 
 	subparser = subparsers.add_parser("test", help="Perform testing")
 	subparser.set_defaults(func=test)
@@ -449,8 +507,8 @@ if __name__ == "__main__":
 	group.add_argument("--vad-frame-length", help="VAD frame length in ms (10, 20 or 30, default: %(default)d)", default=20, type=int)
 	"""
 
-	subparser = subparsers.add_parser("ls", help="List all classifiers in <MODELS>")
-	subparser.set_defaults(func=ls)
+	subparser = subparsers.add_parser("list", help="List all classifiers in <MODELS>")
+	subparser.set_defaults(func=_list)
 
 	"""
 	subparser = subparsers.add_parser("test-vad", help="Try all combinations of VAD parameters and list statistics")

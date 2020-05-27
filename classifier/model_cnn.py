@@ -112,6 +112,7 @@ class CNN(Model):
 		dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
 			collate_fn=CNNCollate, pin_memory=self.device != 'cpu')
 
+		# The score for each label is the number of frames which were given the label
 		scores = np.zeros((len(test_data), len(self.noise_types)))
 
 		with torch.no_grad():
@@ -163,6 +164,7 @@ class CNNModule(nn.Module):
 		
 
 class CNNDataset(Dataset):
+	"""Dataset used during training. Yields each frame and its label index."""
 	def __init__(self, data, keys, frame_len, frame_overlap):
 		# TODO: allow concatenated sequences
 		assert not Model.is_concatenated(data[keys[0]])
@@ -178,6 +180,7 @@ class CNNDataset(Dataset):
 		return len(self.data)
 
 class CNNScoringDataset(Dataset):
+	"""Dataset used during scoring. Yields each frame and the index of the sequence it belongs to."""
 	def __init__(self, data, frame_len, frame_overlap):
 		assert not Model.is_concatenated(data)
 		self.data = [(sequence[ptr:ptr + frame_len], sequence_idx)
@@ -192,6 +195,7 @@ class CNNScoringDataset(Dataset):
 	
 
 def CNNCollate(samples):
+	"""Packs items from an above dataset into two tensors"""
 	frames, labels = zip(*samples)
 	frames = torch.cat([torch.from_numpy(frame).view(1, 1, *frame.shape) for frame in frames])
 	labels = torch.tensor(labels) # pylint: disable=E1102

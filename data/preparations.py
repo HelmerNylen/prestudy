@@ -32,12 +32,16 @@ def get_info(filename):
 # Output the needed sox options to make the file usable
 def _build_command(info, to_mono, downsample):
 	command = []
+	# We need mono files ...
 	if to_mono and not info["Channels"] == "1":
 		command.append(("-c", "1"))
+	# .. with 16-bit precision ...
 	if info["Precision"].rstrip("-bit") != "16":
 		command.append(("-b", "16"))
+	# ... at 16 kHz sample rate (we don't upsample, though)...
 	if downsample and int(info["Sample Rate"]) > 16000:
 		command.append(("-r", "16000"))
+	# ... which aren't sphere files (which is what TIMIT contains)
 	if info["Input File"].endswith(" (sph)"):
 		command.append(None)
 	return command
@@ -55,11 +59,13 @@ def prep_folder(folder, recursive=False, prompt=False, skip_if_fixed=True, to_mo
 	commands = []
 
 	with NamedTemporaryFile() as tmp:
+		# Iterate over all audio files found
 		for f in files:
 			path, ext = os.path.splitext(f)
 			if ext.lower() not in audio_exts:
 				continue
 			info = get_info(path + ext)
+			# Build a command which makes the file usable by the classifiers
 			command = _build_command(info, to_mono, downsample)
 
 			if ext != ".wav":
@@ -75,6 +81,7 @@ def prep_folder(folder, recursive=False, prompt=False, skip_if_fixed=True, to_mo
 				commands.append(['sox', path + ext] + [x for c in command if c for x in c] + [tmp.name])
 				commands.append((f"Copy {tmp.name} to {path + '.wav'}", lambda x, y: copy2(x, y, follow_symlinks=True), tmp.name, path + ".wav"))
 
+		# Let the user confirm that we're about to make irreversible changes to their precious data
 		if prompt and len(commands) > 0:
 			print("Suggesting the following operations:")
 			if len(commands) // 2 <= 20 \
@@ -89,6 +96,7 @@ def prep_folder(folder, recursive=False, prompt=False, skip_if_fixed=True, to_mo
 				print("Discarding suggestions")
 				return
 		
+		# Run all commands
 		for c in commands:
 			if type(c) is tuple:
 				c[1](*c[2:])

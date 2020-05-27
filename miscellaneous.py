@@ -28,13 +28,14 @@ def timit(args):
 	print(f"Median: {np.median(lengths):.2f} s")
 	print(f"Std. dev.: {np.std(lengths):.2f} s")
 
-	plt.figure()
-	plt.hist(lengths, bins=np.arange(0, np.ceil(max(lengths)), 1/3))
-	plt.xlabel("Length [s]")
-	plt.ylabel("Number of utterances")
-	plt.title("TIMIT utterance lengths")
-	plt.savefig("timit.png")
-	print("Plot saved")
+	if args.plot_lengths:
+		plt.figure()
+		plt.hist(lengths, bins=np.arange(0, np.ceil(max(lengths)), 1/3))
+		plt.xlabel("Length [s]")
+		plt.ylabel("Number of utterances")
+		plt.title("TIMIT utterance lengths")
+		plt.savefig("timit.png")
+		print("Plot saved")
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(
@@ -46,6 +47,8 @@ if __name__ == "__main__":
 
 	subparser = subparsers.add_parser("timit", help="Print TIMIT stats")
 	subparser.set_defaults(func=timit)
+
+	subparser.add_argument("-p", "--plot-lengths", help="Create a histogram of utterance lengths", action="store_true")
 
 	args = parser.parse_args()
 	start = time()

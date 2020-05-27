@@ -6,9 +6,11 @@ import subprocess
 import kaldi_io
 import numpy as np
 
+# Combine features sequences into one big matrix and a list of sequence lengths
 def concat_samples(data):
 	return np.concatenate(data), [arr.shape[0] for arr in data]
 
+# Split the sequences into a list of individual sequence matrices
 def split_samples(data, lengths=None):
 	if lengths == None:
 		data, lengths = data
@@ -62,6 +64,7 @@ def extract_mfcc(folder, overwrite, concatenate=False):
 			res[noise_type] = concat_samples(res[noise_type])
 	return res
 
+"""
 def load_all_train(train_folder, vad_aggressiveness, frame_length):
 	if not os.path.exists(train_folder):
 		raise ValueError(f"Training data folder does not exist: {train_folder}")
@@ -98,3 +101,4 @@ def load_all_train(train_folder, vad_aggressiveness, frame_length):
 
 def load_all_test():
 	pass
+"""

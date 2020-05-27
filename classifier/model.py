@@ -1,8 +1,12 @@
 import pickle
 class Model():
+	"""Base class for models"""
 	def __init__(self, config: dict, noise_types: list=None):
 		raise NotImplementedError()
 
+	# Models can be either single-class (one model is trained per label)
+	# or multi-class (one model is trained on all labels)
+	# This affects the expected data structures for train_data and test_data
 	MULTICLASS = False
 	def get_noise_types(self):
 		raise NotImplementedError()
@@ -13,10 +17,10 @@ class Model():
 		raise NotImplementedError()
 
 	@staticmethod
-	def from_file(filename):
+	def from_file(filename: str):
 		with open(filename, 'rb') as f:
 			return pickle.load(f)
-	def save_to_file(self, filename):
+	def save_to_file(self, filename: str):
 		with open(filename, 'wb') as f:
 			pickle.dump(self, f)
 

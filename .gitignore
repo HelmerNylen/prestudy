@@ -12,7 +12,9 @@ data/train/*
 data/test/*
 evaluation/*.classifier
 evaluation/*.confusiontable
-evaluation/plots/*
+evaluation/plots/*.pdf
+cross-evaluation/*/*.confusiontable
+cross-evaluation/plots/*
 
 # Deleted files
 data/__old_create_sample.py

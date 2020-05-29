@@ -7,10 +7,11 @@ import pickle
 from confusion_table import ConfusionTable
 from time import time, strftime, localtime
 from math import floor
+from itertools import count, chain
 
 available_classifiers = ["GMMHMM", "GenHMM", "LSTM", "CNN", "SVM"]
 
-def _scores_stats(scores: dict):
+def _scores_stats(scores: dict) -> tuple:
 	"""Get the combinations of possibly valid keys for a scores dict"""
 
 	import numpy as np
@@ -30,7 +31,11 @@ def _scores_stats(scores: dict):
 		for ct in classifiers
 			for dn in datasets
 	}
-	return classifiers, datasets, num_instances, num_epochs
+	if isinstance(scores, dict) and isinstance(next(iter(scores.values())), dict):
+		keys = np.unique([key for d in scores.values() for key in d])
+		return classifiers, datasets, num_instances, num_epochs, keys
+	else:
+		return classifiers, datasets, num_instances, num_epochs
 
 def coverage(args):
 	if not os.path.exists(args.working_folder):
@@ -176,7 +181,7 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 
 	# Dataset difficulty
 	plt.figure()
-	width = 1 / (len(datasets) + 2)
+	width = 1 / (len(classifiers) + 2)
 	for i, classifier_type in enumerate(classifiers):
 		# This probably does not consider --allow-partial and --ignore-partial they way it should
 		avgs = []
@@ -193,23 +198,23 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 					if c not in consistent_colors.values()][0]
 		
 		plt.bar(
-			np.arange(len(datasets)) + width * (i + 0.5 - len(classifiers) / 2),
+			np.arange(len(datasets)) + width * (i - len(classifiers) / 2),
 			avgs,
 			width=width,
 			label=classifier_type,
 			color=consistent_colors[classifier_type]
 		)
-		plt.legend()
-		plt.xlabel("Dataset")
-		plt.xticks(range(len(datasets)), datasets)
-		plt.ylim((floor(min(scores.values()) * 20) / 20, 1))
-		plt.ylabel(scorestr[0])
-		yticks, _ = plt.yticks()
-		plt.yticks(yticks, [f"{y:.0%}" for y in yticks])
-		plt.grid(axis="y")
-		plt.title(f"Classifier performance by dataset")
-		plt.gcf().autofmt_xdate()
-		plt.savefig(os.path.join(folder, "datasets." + format), bbox_inches='tight')
+	plt.legend()
+	plt.xlabel("Dataset")
+	plt.xticks(range(len(datasets)), datasets)
+	plt.ylim((floor(min(scores.values()) * 20) / 20, 1))
+	plt.ylabel(scorestr[0])
+	yticks, _ = plt.yticks()
+	plt.yticks(yticks, [f"{y:.0%}" for y in yticks])
+	plt.grid(axis="y")
+	plt.title(f"Classifier performance by dataset")
+	plt.gcf().autofmt_xdate()
+	plt.savefig(os.path.join(folder, "datasets." + format), bbox_inches='tight')
 	
 	print([(t, v) for t, v in scores.items() if v == max(scores.values())])
 	print([(t, v) for t, v in scores.items() if v == min(scores.values())])
@@ -218,9 +223,95 @@ def _create_plots(scores: dict, folder: str, partial: str="error", format: str="
 	import warnings
 	warnings.filterwarnings("ignore")
 
+def _create_cross_plots(scores: dict, folder: str, format: str="pdf", accuracy: bool=False):
+	import matplotlib.pyplot as plt
+	import numpy as np
+
+	scorestr = ("Accuracy", "accuracy") if accuracy else ("F1-score", "F1-score")
+	classifiers, source_datasets, num_instances, num_epochs, target_datasets = _scores_stats(scores)
+
+	best_epoch = dict()
+	
+	# Average training progress interpreted on each target dataset
+	for target_dataset in target_datasets:
+		plt.figure()
+		plotted_anything = False
+		minval = np.inf
+		for classifier_type in classifiers:
+			for source_dataset in source_datasets:
+				if num_epochs[(classifier_type, source_dataset)] == num_instances[(classifier_type, source_dataset)] == 0:
+					continue
+				avgs = []
+				stats = {Q: [] for Q in (0.0, 0.25, 0.5, 0.75, 1.0)}
+				for epoch in range(1, num_epochs[(classifier_type, source_dataset)] + 1):
+					vals = []
+					for instance in range(num_instances[(classifier_type, source_dataset)]):
+						if (classifier_type, source_dataset, instance, epoch) in scores \
+								and target_dataset in scores[(classifier_type, source_dataset, instance, epoch)]:
+							vals.append(scores[(classifier_type, source_dataset, instance, epoch)][target_dataset])
+					if len(vals) > 0:
+						avg = sum(vals) / len(vals)
+						avgs.append(avg)
+						for Q, arr in stats.items():
+							arr.append(np.quantile(vals, Q))
+						t = (target_dataset, classifier_type, source_dataset)
+						if t not in best_epoch or best_epoch[t][1] < avg:
+							best_epoch[t] = (epoch, avg)
+					else:
+						break
+				x = range(1, len(avgs) + 1)
+				if len(x) > 1:
+					line, = plt.plot(x, avgs, label=f"{classifier_type} ({source_dataset})", marker='.')
+					plt.fill_between(x, stats[0.25], stats[0.75], color=line.get_color(), alpha=0.2, zorder=-1)
+					minval = min(minval, *stats[0.25])
+					plotted_anything = True
+
+		if plotted_anything:
+			plt.legend()
+			plt.xlabel("Epoch")
+			plt.xticks(range(1, int(plt.xlim()[1]) + 1))
+			plt.ylim((floor(minval * 20) / 20, 1))
+			plt.ylabel(scorestr[0])
+			yticks, _ = plt.yticks()
+			plt.yticks(yticks, [f"{y:.0%}" for y in yticks])
+			plt.grid()
+			plt.title(f"Training progress interpreted on {target_dataset}")
+			plt.savefig(os.path.join(folder, "training_" + target_dataset + "." + format))
+		else:
+			print("No data to plot for dataset", target_dataset)
+	
+	# Dataset transferability
+	plt.figure()
+	width = 1 / (len(classifiers) * len(source_datasets) + 2)
+	for i, classifier_type in enumerate(classifiers):
+		for j, source_dataset in enumerate(source_datasets):
+			_, avgs = zip(*(best_epoch[(target_dataset, classifier_type, source_dataset)] if (target_dataset, classifier_type, source_dataset) in best_epoch else (0, np.nan) for target_dataset in target_datasets))
+			
+			plt.bar(
+				np.arange(len(target_datasets)) + width * (i * len(source_datasets) + j - len(classifiers) * len(source_datasets) / 2),
+				avgs,
+				width=width,
+				label=f"{classifier_type} ({source_dataset})"
+			)
+	plt.legend()
+	plt.xlabel("New dataset")
+	plt.xticks(range(len(target_datasets)), target_datasets)
+	plt.ylim((floor(min(chain(*map(dict.values, scores.values()))) * 20) / 20, 1))
+	plt.ylabel(scorestr[0])
+	yticks, _ = plt.yticks()
+	plt.yticks(yticks, [f"{y:.0%}" for y in yticks])
+	plt.grid(axis="y")
+	plt.title(f"Classifier performance by new dataset")
+	plt.gcf().autofmt_xdate()
+	plt.savefig(os.path.join(folder, "target_datasets." + format), bbox_inches='tight')
+	
+	# Suppress warnings
+	import warnings
+	warnings.filterwarnings("ignore")
+
 def plot(args):
 	if not os.path.exists(args.working_folder):
-		print(f"Working folder {args.working_folder} does not exist")
+		print(f"{'Cross working' if args.cross_datasets else 'Working'} folder {args.working_folder} does not exist")
 		sys.exit(1)
 
 	plots_folder = os.path.join(args.working_folder, "plots")
@@ -230,32 +321,55 @@ def plot(args):
 	
 	print("Loading confusion tables ...", end="", flush=True)
 	scores = dict()
-	for filename in next(os.walk(args.working_folder))[2]:
-		if filename.endswith(".confusiontable"):
-			classifier_type, dataset, instance, epoch = _unpack_filename(filename)
-			if classifier_type.lower() not in map(str.lower, args.types):
-				continue
-			if args.datasets is not None and dataset.lower() not in map(str.lower, args.datasets):
-				continue
-			with open(os.path.join(args.working_folder, filename), "rb") as f:
-				confusion_table = pickle.load(f)
-			if args.accuracy:
-				scores[(classifier_type, dataset, instance, epoch)] = confusion_table.accuracy()
-			else:
-				scores[(classifier_type, dataset, instance, epoch)] = confusion_table.average("F1-score")
+	if args.cross_datasets:
+		walk = ((d, next(os.walk(os.path.join(args.working_folder, d)))[2]) for d in next(os.walk(args.working_folder))[1])
+	else:
+		walk = [("", next(os.walk(args.working_folder))[2])]
+
+	for folder, files in walk:
+		for filename in files:
+			if filename.endswith(".confusiontable"):
+				classifier_type, dataset, instance, epoch = _unpack_filename(filename)
+				if classifier_type.lower() not in map(str.lower, args.types):
+					continue
+				if args.datasets is not None and dataset.lower() not in map(str.lower, args.datasets):
+					continue
+				if args.cross_datasets is not None and folder.lower() not in map(str.lower, args.cross_datasets):
+					continue
+				
+				with open(os.path.join(args.working_folder, folder, filename), "rb") as f:
+					confusion_table = pickle.load(f)
+				if args.accuracy:
+					s = confusion_table.accuracy()
+				else:
+					s = confusion_table.average("F1-score")
+				if args.cross_datasets:
+					t = (classifier_type, dataset, instance, epoch)
+					if t not in scores:
+						scores[t] = dict()
+					scores[t][folder] = s
+				else:
+					scores[(classifier_type, dataset, instance, epoch)] = s
 	print(" Done")
 
 	if args.datasets is not None:
 		for dataset in args.datasets:
 			if dataset.lower() not in (d.lower() for _, d, _, _ in scores):
 				print(f"Dataset {dataset} specified but not found among confusion tables")
+	if args.cross_datasets is not None:
+		for dataset in args.cross_datasets:
+			if dataset.lower() not in map(str.lower, chain(*scores.values())):
+				print(f"Dataset {dataset} specified as a target dataset but not found among confusion tables")
 	for classifier_type in args.types:
 		if classifier_type.lower() not in (c.lower() for c, _, _, _ in scores):
 			print(f"Classifier type {classifier_type} specified but not found among confusion tables")
 	
 	print("Creating plots")
 	partial = "allow" if args.allow_partial else ("ignore" if args.ignore_partial else "error")
-	_create_plots(scores, plots_folder, partial, accuracy=args.accuracy)
+	if args.cross_datasets:
+		_create_cross_plots(scores, plots_folder, format=args.format, accuracy=args.accuracy)
+	else:
+		_create_plots(scores, plots_folder, partial, format=args.format, accuracy=args.accuracy)
 	print("Done")
 	
 def _filename(classifier_type, dataset, instance, epoch, ext=".classifier"):
@@ -274,6 +388,36 @@ def _unpack_filename(filename):
 
 def _time() -> str:
 	return strftime("%H:%M:%S", localtime(time()))
+
+def get_datasets(train, test, dataset_filter, verbose=True):
+	# Locate all datasets
+	datasets = []
+	for folder in tuple(next(os.walk(train))[1]) + (None,):
+		if folder is None:
+			trainpath = train
+			testpath = test
+		else:
+			trainpath = os.path.join(train, folder)
+			testpath = os.path.join(test, folder)
+		if not os.path.exists(testpath):
+			continue
+		if folder == "root" and verbose:
+			print("A dataset is named 'root'. Ignoring it.")
+			continue
+		if len(next(os.walk(trainpath))[2]) > 0 and len(next(os.walk(testpath))[2]) > 0:
+			datasets.append((folder or "root", trainpath, testpath))
+	
+	# Filter datasets
+	if dataset_filter is not None:
+		if verbose:
+			for name in dataset_filter:
+				if name.lower() not in (n.lower() for n, _, _ in datasets):
+					print(f"Unknown dataset {name}. All datasets: {', '.join(n for n, _, _ in datasets)}.")
+		datasets = [tup for tup in datasets if tup[0].lower() in map(str.lower, dataset_filter)]
+	elif verbose:
+		print("Found datasets:", ', '.join(n for n, _, _ in datasets))
+	
+	return datasets
 
 def repeat(args):
 	if args.tolerance < 0:
@@ -305,33 +449,8 @@ def repeat(args):
 	if not os.path.exists(args.working_folder):
 		print(f"Creating working folder {args.working_folder}")
 		os.mkdir(args.working_folder)
-	
-	# Locate all datasets
-	datasets = []
-	for folder in tuple(next(os.walk(args.train))[1]) + (None,):
-		if folder is None:
-			trainpath = args.train
-			testpath = args.test
-		else:
-			trainpath = os.path.join(args.train, folder)
-			testpath = os.path.join(args.test, folder)
-		if not os.path.exists(testpath):
-			continue
-		if folder == "root":
-			print("A dataset is named 'root'. Ignoring it.")
-			continue
-		if len(next(os.walk(trainpath))[2]) > 0 and len(next(os.walk(testpath))[2]) > 0:
-			datasets.append((folder or "root", trainpath, testpath))
-	
-	# Filter datasets
-	if args.datasets is not None:
-		for name in args.datasets:
-			if name.lower() not in (n.lower() for n, _, _ in datasets):
-				print(f"Unknown dataset {name}. All datasets: {', '.join(n for n, _, _ in datasets)}.")
-		datasets = [tup for tup in datasets if tup[0].lower() in map(str.lower, args.datasets)]
-	else:
-		print("Found datasets:", ', '.join(n for n, _, _ in datasets))
-	
+
+	datasets = get_datasets(args.train, args.test, args.datasets)	
 	scores = dict()
 
 	for classifier_type in args.types:
@@ -525,6 +644,85 @@ def reconfigure(args):
 		classifier.save_to_file(_filename(*id_tup), folder=args.working_folder)
 	print("Done")
 
+def cross_evaluate(args):
+	sys.path.append(os.path.join(args.classifier, os.pardir, "gm_hmm", os.pardir))
+	global Classifier
+	from classifier import Classifier
+	Classifier.__module__ = "__main__"
+
+	# Defaults for data folders
+	if args.train is None:
+		args.train = os.path.join(args.data, "train")
+	if not os.path.exists(args.train):
+		print(f"Training folder {args.train} does not exist")
+		sys.exit(1)
+	if args.test is None:
+		args.test = os.path.join(args.data, "test")
+	if not os.path.exists(args.test):
+		print(f"Testing folder {args.test} does not exist")
+		sys.exit(1)
+
+	if not os.path.exists(args.working_folder):
+		print(f"Working folder {args.working_folder} does not exist")
+		sys.exit(1)
+	if not os.path.exists(args.cross_working_folder):
+		print(f"Creating cross working folder {args.cross_working_folder}")
+		os.mkdir(args.cross_working_folder)
+	
+	source_datasets = get_datasets(args.train, args.test, args.source_datasets)
+	target_datasets = get_datasets(args.train, args.test, args.target_datasets)
+
+	for classifier_type in args.types:
+		if classifier_type.lower() not in map(str.lower, available_classifiers):
+			print(f"Unrecognized classifier type: {classifier_type}. Skipping.")
+			continue
+		# Fix capitalization so equivalent files are detected
+		classifier_type = available_classifiers[[c.lower() for c in available_classifiers].index(classifier_type.lower())]
+
+		for target_dataset, _, testpath in target_datasets:
+			target_folder = os.path.join(args.cross_working_folder, target_dataset)
+			if not os.path.exists(target_folder):
+				os.mkdir(target_folder)
+
+			for source_dataset, _, _ in source_datasets:
+				for epoch in count(1):
+					print(
+						"Classifier:", classifier_type, "Target:", target_dataset,
+						"Source:", source_dataset, "Epoch:", epoch, sep="\t"
+					)
+					total_instances = 0
+					for instance in count(0):
+						filename =  _filename(classifier_type, source_dataset, instance, epoch)
+						if os.path.exists(os.path.join(args.working_folder, filename)):
+							command = [
+								os.path.join(args.classifier, "classifier.py"),
+								"--test", testpath,
+								"--models", args.working_folder,
+								"test",
+								"--write-stdout",
+								filename
+							]
+							print(_time() + ">", *command)
+							result = subprocess.run(
+								command,
+								stdout=subprocess.PIPE
+							)
+							if result.returncode:
+								print("Could not test", os.path.join(args.working_folder, filename))
+								sys.exit(1)
+
+							confusion_table, = pickle.loads(result.stdout)
+							ct_filename = _filename(classifier_type, source_dataset, instance, epoch, ".confusiontable")
+							with open(os.path.join(target_folder, ct_filename), "wb") as f:
+								pickle.dump(confusion_table, f)
+						else:
+							break
+						total_instances += 1
+					
+					if total_instances == 0:
+						break
+	print("Done")
+	print("To view plots run 'plot' with --cross-datasets specified.")
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(
@@ -546,7 +744,7 @@ if __name__ == "__main__":
 	subparser.add_argument("working_folder", help="Folder in which to store classifiers while evaluating them")
 	subparser.add_argument("num_instances", help="Number of classifiers of each type per dataset to average", metavar="N", type=int)
 
-	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers (default: %(default)s)", nargs="+", default=available_classifiers[:-1])
+	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers (default: %(default)s)", nargs="+", default=available_classifiers[:-1], metavar="TYPE")
 	subparser.add_argument("--datasets", help="Names of data sets in <TRAIN> and <TEST> to use. Use 'root' to refer to root folder. Default: use all datasets.", default=None, nargs="+")
 	subparser.add_argument("-a", "--accuracy", help="Use accuracy instead of F1-score", action="store_true")
 	subparser.add_argument("--config", help="Path to classifier config file (default: <CLASSIFIER>/defaults.json)", default=None)
@@ -560,9 +758,11 @@ if __name__ == "__main__":
 
 	subparser.add_argument("working_folder", help="Folder in which classifiers and confusion tables are located, and in which to store plots")
 
-	subparser.add_argument("-t", "--types", help="Only plot certain types of classifiers (default: plots all available types)", nargs="+", default=available_classifiers)
+	subparser.add_argument("-t", "--types", help="Only plot certain types of classifiers (default: plots all available types)", nargs="+", default=available_classifiers, metavar="TYPE")
 	subparser.add_argument("--datasets", help="Only plot certain datasets. Use 'root' to refer to root folder. Default: plots all available datasets.", default=None, nargs="+")
 	subparser.add_argument("-a", "--accuracy", help="Use accuracy instead of F1-score", action="store_true")
+	subparser.add_argument("-f", "--format", help="The file format to save plots in (default: %(default)s)", default="pdf")
+	subparser.add_argument("-c", "--cross-datasets", help="Plot the results of a 'cross-evaluate' run, restricted to these target datasets. Specify source datasets with --datasets.", default=None, nargs="+")
 	
 	group = subparser.add_mutually_exclusive_group()
 	group.add_argument("--allow-partial", help="Include classifiers which have not finished training their last epoch", action="store_true")
@@ -579,8 +779,18 @@ if __name__ == "__main__":
 	subparser.add_argument("working_folder", help="Folder in which classifiers and confusion tables are located")
 	subparser.add_argument("target", help="Train/test on GPU or CPU", choices=("cpu", "gpu"), type=str.lower)
 
-	subparser.add_argument("-t", "--types", help="Only reconfigure certain types of classifiers (default: reconfigures all available types)", nargs="+", default=available_classifiers)
+	subparser.add_argument("-t", "--types", help="Only reconfigure certain types of classifiers (default: reconfigures all available types)", nargs="+", default=available_classifiers, metavar="TYPE")
 	subparser.add_argument("--datasets", help="Only reconfigure for certain datasets. Use 'root' to refer to root folder. Default: reconfigures for all available datasets.", default=None, nargs="+")
+	
+	subparser = subparsers.add_parser("cross-evaluate", help="Test classifiers on a different dataset than they were trained on")
+	subparser.set_defaults(func=cross_evaluate)
+
+	subparser.add_argument("working_folder", help="Folder in which classifiers and confusion tables are located")
+	subparser.add_argument("cross_working_folder", help="Folder in which to store new confusion tables")
+	subparser.add_argument("--source-datasets", help="Classifiers trained on these datasets will be used. Use 'root' to refer to root folder.", required=True, nargs="+", metavar="DATASET")
+	subparser.add_argument("--target-datasets", help="Datasets to be tested on. Use 'root' to refer to root folder.", required=True, nargs="+", metavar="DATASET")
+
+	subparser.add_argument("-t", "--types", help="Only test certain types of classifiers (default: test all available types)", nargs="+", default=available_classifiers, metavar="TYPE")
 
 	args = parser.parse_args()
 	start = time()

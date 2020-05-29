@@ -51,6 +51,9 @@
 			"n_iter": 4,
 			"verbose": true,
 			"force_cpu": true
+		},
+		"score": {
+			"use_gpu": false
 		}
 	},
 	"SVM": {
@@ -85,7 +88,11 @@
 			"learning_rate": 0.03,
 			"batch_size": 256,
 			"verbose": true,
-			"n_iter": 4
+			"n_iter": 4,
+			"force_cpu": true
+		},
+		"score": {
+			"use_gpu": false
 		}
 	}
 }

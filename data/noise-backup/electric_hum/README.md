@@ -1,4 +1,4 @@
-# Air conditioning noise
+# Electric hum noise
 File|Source|License
 ----|------|-------
 001.wav|https://freesound.org/people/adamamazing/sounds/274477/|[Public domain](https://creativecommons.org/publicdomain/zero/1.0/)

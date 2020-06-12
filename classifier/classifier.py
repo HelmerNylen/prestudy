@@ -498,7 +498,7 @@ if __name__ == "__main__":
 	subparser.add_argument("--write-stdout", help="Write resulting confusion tables to stdout. Implies --silent.", action="store_true")
 
 	inp = subparser.add_argument_group("Classifier input")
-	inp.add_argument("read", help="Files relative to <MODELS> to read classifier(s) from. '<TYPE>' can be used in FILE to match all classifier type names. Default: %(default)s", metavar="FILE", nargs="*", default="latest_<TYPE>.classifier")
+	inp.add_argument("read", help="Files relative to <MODELS> to read classifier(s) from. '<TYPE>' can be used in FILE to match all classifier type names. Default: %(default)s", metavar="FILE", nargs="*", default=["latest_<TYPE>.classifier"])
 	inp.add_argument("--read-stdin", help="Read classifiers from stdin", action="store_true")
 
 	"""
